@@ -2,13 +2,14 @@ from typing import Union, Text, Optional, Callable, Any, Iterable, Mapping
 
 from USocket import UnreliableSocket
 
-import struct, queue, threading, time
-
+import struct, queue, threading, time, random
 
 #############################################################################
 # TODO:
 # 1. Determine the buff size of each socket, that is, the size of the queue
 #############################################################################
+
+DEFAULT_BUFF_SIZE = 2048
 
 
 class RDTSocket(UnreliableSocket):
@@ -36,11 +37,22 @@ class RDTSocket(UnreliableSocket):
         # TODO: ADD YOUR NECESSARY ATTRIBUTES HERE
         #############################################################################
 
-        self.windows = [0] * 120  # win size
+        self.is_master_server = False
+        self.master_server_addr = ('127.0.0.1', 0)
+        self.conn_cnt = -1
+        self.max_conn = 10
+        self.data_center = None
+        self.is_server = False
+        self.windows = 0  # win size
+        self.local_seq_num = 0
+        self.local_ack_num = 0
 
         self.segment_buff = queue.Queue()
-        self.data_buff = bytes()
+        self.data_buff = bytearray()
         self.allow_accept = False
+        self.peer_addr = None
+
+        self.busy = False
         #############################################################################
         #                             END OF YOUR CODE                              #
         #############################################################################
@@ -58,28 +70,39 @@ class RDTSocket(UnreliableSocket):
         #############################################################################
         # TODO: YOUR CODE HERE                                                      #
         #############################################################################
-        self.allow_accept = True
+        if self.conn_cnt == -1:
+            self.listen(10)
 
-        # while True:
-        #     seg = super().recv(1024)
-        #     if seg is syn:
-        #
-        #         ack_num = syn_num + 1
-        #         syn_num = random()
-        #         syn = 1, ack = 1
-        #
-        #         super().send(encode(...))
-        #         while True:
-        #             seg = super().recv(1024)
-        #             if conn time out:
-        #                 break
-        #             if seg is ack:
-        #                 return new
-        #                 socket(), addr
-        #             else
-        #                 continue
-        #
-        #     pass
+        if self.conn_cnt > self.max_conn:
+            # raise exception
+            return None, None
+
+        self.allow_accept = True
+        peer_set = set()
+
+        while True:
+            seg, addr = self._recv_from(DEFAULT_BUFF_SIZE)
+            rdt_seg = RDTSegment.parse(seg)
+
+            if rdt_seg is None:
+                continue
+            # if time_out
+            #     break
+
+            if rdt_seg.syn:
+                seq_num = random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
+                ack_num = rdt_seg.seq_num + 1
+                syn_ack_seg = RDTSegment(self.getsockname()[1], rdt_seg.src_port, seq_num, ack_num,
+                                         recv_win=8, syn=True)
+                self._send_to(syn_ack_seg, addr)
+                peer_set.add(addr)
+            elif rdt_seg.ack and addr in peer_set:
+                self.data_center.add_socket(addr, conn)
+                conn.is_server = True
+                conn._recv_from = self._get_recvfrom()
+                conn.master_server_addr = self.master_server_addr
+                conn.data_center = self.data_center
+                break
 
         self.allow_accept = False
         #############################################################################
@@ -95,20 +118,36 @@ class RDTSocket(UnreliableSocket):
         #############################################################################
         # TODO: YOUR CODE HERE                                                      #
         #############################################################################
-        try:
+
+        try:  # If there is no binding address, randomly bind one
             self.getsockname()
-        except Exception:
+        except OSError:
             self.bind(("", 0))
-        syn_seg = RDTSegment(self.getsockname()[1],address[1],1,0,8,syn=True)
+        self._send_to = self._get_sendto(self)
+        self._recv_from = self._get_recvfrom()
 
         # send syn pkt
-        # while True:
-        #     seg = recv()
-        #     if seg is syn,ack and ack_num == syn_num + 1
-        #         send ack pkt
-        #         break
+        self.local_seq_num = random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
+        self.local_ack_num = 0
+        syn_seg = RDTSegment(self.getsockname()[1], address[1], self.local_seq_num, self.local_ack_num, recv_win=8,
+                             syn=True)
+        self._send_to(syn_seg.encode(), address)
 
-        raise NotImplementedError()
+        while True:
+            seg, addr = self._recv_from(DEFAULT_BUFF_SIZE)
+            rdt_seg = RDTSegment.parse(seg)
+            if rdt_seg is None:
+                continue
+            # if syn & ack, send ack
+            if address == addr and rdt_seg.syn and rdt_seg.ack and self.local_seq_num + 1 == rdt_seg.ack_num:
+                self.local_ack_num = rdt_seg.seq_num + 1
+                ack_seg = RDTSegment(self.getsockname()[1], address[1], self.local_seq_num, self.local_ack_num,
+                                     recv_win=8, ack=True)
+                self._send_to(ack_seg.encode(), address)
+                break
+
+        self.peer_addr = address
+
         #############################################################################
         #                             END OF YOUR CODE                              #
         #############################################################################
@@ -128,17 +167,8 @@ class RDTSocket(UnreliableSocket):
         #############################################################################
         # TODO: YOUR CODE HERE                                                      #
         #############################################################################
-        recv_data = bytearray()
-        while True:
-            while self.segment_buff.empty():
-                # time.sleep(0.01)
-                pass
-            seg = self.segment_buff.get()
-
-            pass
-            break
-
-        data = recv_data[:bufsize]
+        data = bytes(self.data_buff[:bufsize])
+        self.data_buff = self.data_buff[bufsize:]
         #############################################################################
         #                             END OF YOUR CODE                              #
         #############################################################################
@@ -166,6 +196,9 @@ class RDTSocket(UnreliableSocket):
         #############################################################################
         # TODO: YOUR CODE HERE                                                      #
         #############################################################################
+        self._send_to = None
+        if self.is_server:
+            self.data_center.rvm_socket(self.peer_addr)
 
         #############################################################################
         #                             END OF YOUR CODE                              #
@@ -181,17 +214,172 @@ class RDTSocket(UnreliableSocket):
     def bind(self, address) -> None:
         super().bind(address)
 
-    def _recvfrom(self, bufsize) -> (bytes, tuple):
+    def listen(self, max_conn: int = 10):
+        if self.conn_cnt == -1:
+            self.max_conn = max_conn
+            self.conn_cnt = 0
+            self.data_center = DataCenter(self)
+            self.is_master_server = True
+            self._recv_from = self._get_recvfrom()
+            self._send_to = self._get_sendto(self)
+            try:
+                self.master_server_addr = super().getsockname()
+            except OSError:
+                self.bind(('127.0.0.1', 0))
+                self.master_server_addr = super().getsockname()
+        else:
+            self.max_conn = max_conn
+
+    def getsockname(self):
+        try:
+            addr = super().getsockname()
+            return addr
+        except OSError:
+            return
+
+    def _get_recvfrom(self):
         """
-        Provide to DataCenter (socket which bind listen port) to call, receive and classify segment
+
         """
-        return super().recvfrom(bufsize)
+        if self.is_server:
+            def recvfrom_func(bufsize):
+                while self.segment_buff.empty():
+                    # time.sleep(0.01)
+                    pass
+                return self.segment_buff.get()
+
+            return recvfrom_func
+        else:
+            return super().recvfrom
+
+    def _get_sendto(self, sock: 'RDTSocket'):
+        if self.is_server:
+            return sock._send_to
+        else:
+            return super().sendto
+        pass
+
+    def _recv_segs_to_data_buff(self):
+        """
+        Receive and process the segment and add the processed data to the buff
+        """
+        recv_data = bytearray()
+        while True:
+            seg, addr = self._recv_from(DEFAULT_BUFF_SIZE)
+            rdt_seg = RDTSegment.parse(seg)
+            if rdt_seg is None:
+                continue
+
+            ack_num = rdt_seg.seq_num + 1
+            # TODO: selective ack
+            pass
+            break
+
+        self.data_buff.extend(recv_data)
 
 
 """
 You can define additional functions and classes to do thing such as packing/unpacking packets, or threading.
 
 """
+
+
+class ProcessingSegment(threading.Thread):
+    def __init__(self, rdt_socket: RDTSocket):
+        threading.Thread.__init__(self)
+        self.rdt_socket = rdt_socket
+
+    def run(self):
+        self.rdt_socket.busy = True
+        self.rdt_socket._recv_segs_to_data_buff()
+        self.rdt_socket.busy = False
+
+
+class DataCenter(threading.Thread):
+    def __init__(self, data_entrance: RDTSocket):
+        threading.Thread.__init__(self)
+        self.data_entrance = data_entrance
+
+        self.__flag = threading.Event()  # The identity used to pause the thread
+        self.__flag.set()  # Initialization does not block threads
+        self.__running = threading.Event()  # The identity used to stop the thread
+        self.__running.set()  # Initialization thread running
+
+        self.socket_table = {}
+
+    def set_data_entrance(self, data_entrance: RDTSocket):
+        self.data_entrance = data_entrance
+
+    def start(self) -> None:
+        super().start()
+
+    def getName(self) -> str:
+        return super().getName()
+
+    def setName(self, name: Text) -> None:
+        super().setName(name)
+
+    def run(self):
+        # listen_addr = self.data_entrance.getsockname()
+
+        while self.__running.isSet():
+            self.__flag.wait()  # 为True时立即返回, 为False时阻塞直到self.__flag为True后返回
+            data, addr = self.data_entrance._recv_from(DEFAULT_BUFF_SIZE)
+            if data:
+                if addr in self.socket_table:
+                    sock = self.socket_table[addr]
+                    sock.segment_buff.put((data, addr))
+                    if not sock.busy:
+                        ProcessingSegment(sock).start()
+                elif self.data_entrance.allow_accept:
+                    self.data_entrance.segment_buff.put(data)
+
+    def pause(self) -> None:
+        """
+        Block thread, pause receiving segment
+        :return: None
+        """
+        self.__flag.clear()
+
+    def resume(self) -> None:
+        """
+        Stop blocking thread, continue to receive segment
+        :return: None
+        """
+        self.__flag.set()
+
+    def stop(self) -> None:
+        """
+        Stop thread
+        :return:
+        """
+        self.__flag.set()
+        self.__running.clear()
+
+    def add_socket(self, key: tuple, value: RDTSocket) -> bool:
+        """
+        Add socket to buff table
+        :param key: address, (ip,port), type tuple (str, int)
+        :param value: socket
+        :return:True if not exist this socket and it added to socket table, else False
+        """
+        if key in self.socket_table:
+            self.socket_table[key] = value
+            self.data_entrance.conn_cnt += 1
+            return True
+        return False
+
+    def rvm_socket(self, key: tuple) -> bool:
+        """
+        Remove socket from buff table
+        :param key: address, (ip,port), type tuple (str, int)
+        :return: True if exist this socket and it deleted from socket table, else False
+        """
+        if key in self.socket_table:
+            del self.socket_table[key]
+            self.data_entrance.conn_cnt -= 1
+            return True
+        return False
 
 
 class RDTSegment:
@@ -212,11 +400,15 @@ class RDTSegment:
     |                     Acknowledgment number                     |
     |                                                               |
     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
-    |ACK|RST|SYN|FIN| Unused flags  |         Unused                |
+    | Header length |ACK|RST|SYN|FIN|         Unused                |
     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
     |                         Receive window                        |
     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
     |                           Checksum                            |
+    +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+    |                                                               |
+    /                            Options                            /
+    /                                                               /
     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
     |                                                               |
     /                            Payload                            /
@@ -241,16 +433,21 @@ class RDTSegment:
     """
 
     _head_len_byte = 18
-    _seq_num_bound = 2 ** (4 * 8)
+    SEQ_NUM_BOUND = 2 ** (4 * 8)
     _win_size_bound = 2 ** 12
     _default_win_size = 16
 
-    def __init__(self, src_port: int, dest_port: int, seq_num: int, ack_num: int, recv_win: int, payload: bytes = None,
+    def __init__(self, src_port: int, dest_port: int, seq_num: int, ack_num: int, recv_win: int,
+                 check_sum: int = 0, payload: bytes = None, options: dict = None,
                  ack: bool = False, rst: bool = False, syn: bool = False, fin: bool = False):
+        if options is None:
+            options = {}
         self.src_port = src_port
         self.dest_port = dest_port
-        self.seq_num = seq_num % self._seq_num_bound
-        self.ack_num = ack_num % self._seq_num_bound
+        self.seq_num = seq_num % self.SEQ_NUM_BOUND
+        self.ack_num = ack_num % self.SEQ_NUM_BOUND
+        self.check_sum = check_sum
+        self.options = options
 
         self.ack = ack
         self.rst = rst
@@ -261,31 +458,73 @@ class RDTSegment:
         self.recv_win = recv_win
         self.payload = payload
 
-    def _set_flag(self, flags: int):
-        self.ack = (flags & 0x80) != 0
-        self.rst = (flags & 0x40) != 0
-        self.syn = (flags & 0x20) != 0
-        self.fin = (flags & 0x10) != 0
+    def _decode_flags(self, flags: int) -> None:
+        self.ack = (flags & 0x08) != 0
+        self.rst = (flags & 0x04) != 0
+        self.syn = (flags & 0x02) != 0
+        self.fin = (flags & 0x01) != 0
+        #   [header length]        unit           size
+        #     in segment           Word   (flags & 0xFF) >> 4
+        #  in RDTSegment class     Byte   (flags & 0xFF) >> 2
+        self.head_len = (flags & 0xFF) >> 2
 
-    def _get_flag(self) -> int:
+    def _encode_flags(self) -> int:
         flags = 0
         if self.ack:
-            flags |= 0x80
+            flags |= 0x08
         if self.rst:
-            flags |= 0x40
+            flags |= 0x04
         if self.syn:
-            flags |= 0x20
+            flags |= 0x02
         if self.fin:
-            flags |= 0x10
+            flags |= 0x01
+        flags |= ((self.head_len & 0x3c) << 2)
         return flags & 0xFF
+
+    def _decode_options(self, options: bytes) -> None:
+        i = 0
+        op_len = len(options)
+        while i < op_len:
+            kind = int(options[i])
+            if kind == 5:
+                length = int(options[i + 1])
+                edges_cnt = (length - 2) // 4
+                # edges: (leftEdge1, rightEdge1, leftEdge2, rightEdge2 ...)
+                edges = struct.unpack('!' + 'L' * edges_cnt, options[i + 2:i + length])
+                # sack_edge: ((leftEdge1, rightEdge1), (leftEdge2, rightEdge2) ...)
+                it = iter(edges)
+                sack_edge = tuple(b for b in zip(it, it))
+                self.options[kind] = sack_edge
+                i += length
+            elif kind == 0:
+                break
+            elif kind == 1:
+                i += 1
+            else:
+                break
+
+    def _encode_options(self) -> bytes:
+        options_byte = bytearray()
+        if 5 in self.options:
+            sack_edge = self.options.get(5)
+            sack_cnt = len(sack_edge)
+            options_byte.extend(struct.pack('!BBBB', 1, 1, 5, sack_cnt + 2))
+            for i, j in sack_edge:
+                options_byte.extend(struct.pack('!LL', i, j))
+        return bytes(options_byte)
 
     def encode(self) -> bytes:
         """Encode RDTSegment object to segment (bytes)"""
-        flags = self._get_flag()
+        flags = self._encode_flags()
+        # B 1 H 2 L 4
         # src_port   dest_port  seq_num  ack_num  flags  unused  recv_win  checksum
         head = struct.pack('!HHLLBBHH', self.src_port, self.dest_port, self.seq_num, self.ack_num, flags, 0,
                            self.recv_win, 0)
         segment = bytearray(head)
+
+        if self.options:
+            segment.extend(self._encode_options())
+
         if self.payload:
             segment.extend(self.payload)
         checksum = RDTSegment.calc_checksum(segment)
@@ -298,14 +537,18 @@ class RDTSegment:
     def parse(segment: bytes):
         """Parse raw segment into an RDTSegment object"""
         try:
-            assert RDTSegment.calc_checksum(segment) == 0
-            head = segment[0:RDTSegment._head_len_byte]
+            if RDTSegment.calc_checksum(segment) != 0:
+                return None
+            head = segment[0:18]
 
-            payload = segment[18:]
             src_port, dest_port, seq_num, ack_num = struct.unpack('!HHLL', head[0:12])
             flags, unused, recv_win, checksum = struct.unpack('!BBHH', head[12:18])
-            rdt_seg = RDTSegment(src_port, dest_port, seq_num, ack_num, recv_win, payload)
-            rdt_seg._set_flag(flags)
+            head_length = (flags & 0xFF) >> 2
+            payload = segment[head_length:]
+            rdt_seg = RDTSegment(src_port, dest_port, seq_num, ack_num, recv_win, checksum,payload)
+            rdt_seg._decode_flags(flags)
+            if rdt_seg.head_len > 18:
+                rdt_seg._decode_options(segment[18:head_length])
             return rdt_seg
         except AssertionError as e:
             raise ValueError from e
@@ -325,82 +568,3 @@ class RDTSegment:
         while bytes_sum > 2 ** 16:
             bytes_sum = (bytes_sum & 0xFFFF) + (bytes_sum >> 16)
         return ~bytes_sum & 0xFFFF
-
-
-class DataCenter(threading.Thread):
-    def __init__(self, data_entrance: RDTSocket):
-        threading.Thread.__init__(self)
-        self.data_entrance = data_entrance
-
-        self.__flag = threading.Event()  # The identity used to pause the thread
-        self.__flag.set()  # Initialization does not block threads
-        self.__running = threading.Event()  # The identity used to stop the thread
-        self.__running.set()  # Initialization thread running
-
-        self.segment_buff_table = {}
-
-    def start(self) -> None:
-        super().start()
-
-    def getName(self) -> str:
-        return super().getName()
-
-    def setName(self, name: Text) -> None:
-        super().setName(name)
-
-    def run(self):
-        # listen_addr = self.data_entrance.getsockname()
-
-        while self.__running.isSet():
-            self.__flag.wait()  # 为True时立即返回, 为False时阻塞直到self.__flag为True后返回
-            data, addr = self.data_entrance._recvfrom(2048)
-            if data:
-                if addr in self.segment_buff_table:
-                    self.segment_buff_table[addr].put(data)
-                elif self.data_entrance.allow_accept:
-                    self.data_entrance.segment_buff.put(data)
-
-    def pause(self) -> None:
-        """
-        Block thread, pause receiving message
-        :return: None
-        """
-        self.__flag.clear()
-
-    def resume(self) -> None:
-        """
-        Stop blocking thread, continue to receive message
-        :return: None
-        """
-        self.__flag.set()
-
-    def stop(self) -> None:
-        """
-        Stop thread
-        :return:
-        """
-        self.__flag.set()
-        self.__running.clear()
-
-    def add_buff(self, key: tuple, value: queue.Queue) -> bool:
-        """
-        Add buff to buff table
-        :param key: address, (ip,port), type tuple (str, int)
-        :param value: buff queue
-        :return:True if not exist this buff and it added to buff table, else False
-        """
-        if key in self.segment_buff_table:
-            self.segment_buff_table[key] = value
-            return True
-        return False
-
-    def rvm_buf(self, key: tuple) -> bool:
-        """
-        Remove buff from buff table
-        :param key: address, (ip,port), type tuple (str, int)
-        :return: True if exist this buff and it deleted from buff table, else False
-        """
-        if key in self.segment_buff_table:
-            del self.segment_buff_table[key]
-            return True
-        return False
