@@ -4,6 +4,7 @@ from USocket import UnreliableSocket
 
 import struct, queue, threading, time, random
 
+from queue import PriorityQueue
 #############################################################################
 # TODO:
 # 1. Determine the buff size of each socket, that is, the size of the queue
@@ -53,6 +54,13 @@ class RDTSocket(UnreliableSocket):
         self.peer_addr = None
 
         self.busy = False
+
+        # sack variable
+        self.main_pq = PriorityQueue()
+        self.sub_pq = PriorityQueue()
+        self.ack_base = -1
+        self.ack_set = set()
+
         #############################################################################
         #                             END OF YOUR CODE                              #
         #############################################################################
@@ -263,19 +271,57 @@ class RDTSocket(UnreliableSocket):
         """
         Receive and process the segment and add the processed data to the buff
         """
-        recv_data = bytearray()
+        # recv_data = bytearray()
+        ack_seg = None
         while True:
             seg, addr = self._recv_from(DEFAULT_BUFF_SIZE)
             rdt_seg = RDTSegment.parse(seg)
             if rdt_seg is None:
                 continue
 
-            ack_num = rdt_seg.seq_num + 1
+            # ack_num = rdt_seg.seq_num + 1
             # TODO: selective ack
-            pass
+            check_sum = RDTSegment.calc_checksum(rdt_seg.encode())
+            check_sum += rdt_seg.check_sum
+            if ~check_sum:
+                continue
+
+            data_len = len(rdt_seg.payload)
+            ack_range_tuple = (rdt_seg.seq_num, (rdt_seg.seq_num + data_len) % rdt_seg.SEQ_NUM_BOUND)
+            if self.ack_base < rdt_seg.seq_num:
+                if ack_range_tuple not in self.ack_set:
+                    self.main_pq.put(AckRange(ack_range_tuple, rdt_seg.payload))
+                    self.ack_set.add(ack_range_tuple)
+                if ack_seg is None:
+                    ack_seg = RDTSegment(rdt_seg.dest_port, rdt_seg.src_port, 0, self.ack_base, ack=True)
+            elif self.ack_base == rdt_seg.seq_num or self.ack_base == -1:
+                self.ack_base += data_len
+                self.data_buff.extend(rdt_seg.payload)
+                while True:
+                    if self.main_pq.empty():
+                        if self.sub_pq.empty():
+                            break
+                        self.main_pq = self.sub_pq
+                        self.sub_pq = PriorityQueue()
+                        continue
+                    min_ack_range = self.main_pq.get()
+                    self.ack_set.remove(min_ack_range)
+                    if self.ack_base == min_ack_range.value[0]:
+                        self.ack_base = min_ack_range.value[1]
+                        self.data_buff.extend(min_ack_range.data)
+                        continue
+                    else:
+                        # construct an option sack
+                        ack_seg = RDTSegment(rdt_seg.dest_port, rdt_seg.src_port, 0, self.ack_base, ack=True)
+                        ack_seg.options[5] = [(self.ack_base, min_ack_range.value[0])]
+                        break
+            else:
+                self.sub_pq.put(AckRange(ack_range_tuple, rdt_seg.payload))
+
+            self._send_to(ack_seg.encode(), addr)
+
             break
 
-        self.data_buff.extend(recv_data)
 
 
 """
@@ -294,6 +340,13 @@ class ProcessingSegment(threading.Thread):
         self.rdt_socket._recv_segs_to_data_buff()
         self.rdt_socket.busy = False
 
+class AckRange:
+    def __init__(self, value: tuple, data: bytes):
+        self.value = value
+        self.data = data
+
+    def __lt__(self, other: 'AckRange'):
+        return self.value[0] < other.value[0]
 
 class DataCenter(threading.Thread):
     def __init__(self, data_entrance: RDTSocket):
@@ -437,7 +490,7 @@ class RDTSegment:
     _win_size_bound = 2 ** 12
     _default_win_size = 16
 
-    def __init__(self, src_port: int, dest_port: int, seq_num: int, ack_num: int, recv_win: int,
+    def __init__(self, src_port: int, dest_port: int, seq_num: int, ack_num: int, recv_win: int = 8,
                  check_sum: int = 0, payload: bytes = None, options: dict = None,
                  ack: bool = False, rst: bool = False, syn: bool = False, fin: bool = False):
         if options is None:
@@ -545,7 +598,7 @@ class RDTSegment:
             flags, unused, recv_win, checksum = struct.unpack('!BBHH', head[12:18])
             head_length = (flags & 0xFF) >> 2
             payload = segment[head_length:]
-            rdt_seg = RDTSegment(src_port, dest_port, seq_num, ack_num, recv_win, checksum,payload)
+            rdt_seg = RDTSegment(src_port, dest_port, seq_num, ack_num, recv_win, checksum, payload)
             rdt_seg._decode_flags(flags)
             if rdt_seg.head_len > 18:
                 rdt_seg._decode_options(segment[18:head_length])
