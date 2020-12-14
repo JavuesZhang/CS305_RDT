@@ -2,7 +2,7 @@ from typing import Union, Text, Optional, Callable, Any, Iterable, Mapping
 
 from USocket import UnreliableSocket
 
-import struct, queue, threading, time, random
+import struct, queue, threading, time, random, ctypes
 
 from queue import PriorityQueue
 #############################################################################
@@ -52,6 +52,8 @@ class RDTSocket(UnreliableSocket):
         self.data_buff = bytearray()
         self.allow_accept = False
         self.peer_addr = None
+        self.mss = 1460
+        self.rtt_orign = 0
 
         self.busy = False
 
@@ -192,6 +194,107 @@ class RDTSocket(UnreliableSocket):
         # TODO: YOUR CODE HERE                                                      #
         #############################################################################
         raise NotImplementedError()
+
+        # 0--slow start;
+        # 1--congestion avoidance
+        # 2--fast recovery
+        congestionCtrl_state = 0
+        threash = 1 << 32
+
+        def congestion_control_newAck(ack_size):
+            global congestionCtrl_state, send_window_len, threash
+            if congestionCtrl_state == 0:
+                send_window_len += ack_size
+                if send_window_len >= threash:
+                    congestionCtrl_state = 1
+                    send_window_len = threash
+            if congestionCtrl_state == 1:
+                send_window_len += (int)(ack_size / send_window_len) * self.mss
+            if congestionCtrl_state == 2:
+                threash = send_window_len/2               
+                send_window_len = threash + 3 * self.mss
+                congestionCtrl_state = 1
+
+        seq_base = self.local_seq_num
+        send_base = 0
+        next_seq = 0
+        send_window_len = self.mss
+        time_out = self.rtt_orign
+        fr_cnt = 0
+        unACK_range = [0, 0]
+        seq_size = 1 << 32
+        while True:
+            # divide segments in send_window and send them
+            timer_start = time.time()
+            while True:
+                if send_base + send_window_len - next_seq >= self.mss and next_seq+self.mss <= len(data):
+                    new_segment = RDTSegment(0, 0, (seq_base+next_seq) % seq_size, 0, 0, 0, data[next_seq: next_seq+self.mss])
+                    self._send_to(new_segment.encode(), self.addr)
+                    next_seq += self.mss
+                elif send_base + send_window_len > len(data) and next_seq+self.mss > len(data):
+                    new_segment = RDTSegment(0, 0, (seq_base+next_seq) % seq_size, 0, 0, 0, data[next_seq:])
+                    self._send_to(new_segment.encode(), self.addr)
+                    next_seq = len(data)
+                else:
+                    break
+            # receive ack
+            send_base_seq = (seq_base+send_base) % seq_size
+            while True:
+                ack_rcv, addr = self._recv_from(DEFAULT_BUFF_SIZE)
+                if ack_rcv is not None:
+                    ack_segment = RDTSegment.parse(ack_rcv)
+                    # move window
+                    if ack_segment.ack_num > send_base_seq:
+                        send_base += (ack_segment.ack_num-send_base_seq)
+                        congestion_control_newAck(ack_segment.ack_num-send_base_seq)
+                        fr_cnt = 0
+                        continue
+                    elif ack_segment.ack_num < send_base_seq and (ctypes.c_int32)(send_base_seq-ack_segment.ack_num) < 0:
+                        send_base += (seq_size + ack_segment.ack_num - send_base_seq)
+                        congestion_control_newAck(seq_size + ack_segment.ack_num - send_base_seq)
+                        fr_cnt = 0
+                        continue
+                    # acculate for fast retransmission
+                    else:
+                        if fr_cnt == 0:
+                            unACK_range[0] = send_base_seq
+                            unACK_range[1] = ack_segment.options[5][1]
+                            fr_cnt += 1
+                        else:
+                            if (ack_segment.options[5][1] < unACK_range[1] and (ctypes.c_int32)(unACK_range[1]-ack_segment.options[5][1]) > 0) or (ack_segment.options[5][1] > unACK_range[1] and (ctypes.c_int32)(unACK_range[1]-ack_segment.options[5][1]) < 0):
+                                unACK_range[1] = ack_segment.options[5][1]
+                            fr_cnt += 1
+                            # judge fast retransimission
+                            if fr_cnt == 3:
+                                fr_base = send_base
+                                if unACK_range[0] < unACK_range[1]:
+                                    fr_len = unACK_range[1] - unACK_range[0]
+                                else:
+                                    fr_len = unACK_range[1] - unACK_range[0] + seq_size
+                                fr_next = fr_base
+                                while True:
+                                    if fr_base + fr_len - fr_next >= self.mss:
+                                        new_segment = RDTSegment(0, 0, (seq_base+fr_next) % seq_size, 0, 0, 0, data[fr_next: fr_next+self.mss])
+                                        self._send_to(new_segment.encode(), self.addr)
+                                        fr_next += self.mss
+                                    elif fr_next < len(data):
+                                        new_segment = RDTSegment(0, 0, (seq_base+fr_next) % seq_size, 0, 0, 0, data[fr_next:])
+                                        self._send_to(new_segment.encode(), self.addr)
+                                        fr_next = len(data)
+                                    else:
+                                        break
+                                fr_cnt = 0
+                                congestionCtrl_state = 2
+                                congestion_control_newAck(self.mss)
+                                timer_start = time.time()
+                # judge time out
+                if time.time()-timer_start > time_out:
+                    new_segment = RDTSegment(0, 0, seq_base+send_base, 0, 0, 0, data[send_base: min(send_base+self.mss, len(data))])
+                    self._send_to(new_segment.encode(), self.addr)
+                    timer_start = time.time()
+                    send_window_len = 0
+                    congestion_control_newAck(self.mss)
+
         #############################################################################
         #                             END OF YOUR CODE                              #
         #############################################################################
