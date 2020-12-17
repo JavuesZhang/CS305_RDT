@@ -269,9 +269,12 @@ class RDTSocket(UnreliableSocket):
                 send_window_len = threash + 3 * self.mss
                 congestionCtrl_state = 1
 
-        seq_base = self.local_seq_num
-        send_base = 0
-        next_seq = 0
+        # first sequence num
+        seq_base = self.local_seq_num 
+        # location at data
+        send_base = 0 
+        # location at data
+        next_seq = 0 
         send_window_len = self.mss
         time_out = self.rtt_orign
         fr_cnt = 0
@@ -282,72 +285,65 @@ class RDTSocket(UnreliableSocket):
             timer_start = time.time()
             while True:
                 if send_base + send_window_len - next_seq >= self.mss and next_seq + self.mss <= len(data):
-                    new_segment = RDTSegment(0, 0, (seq_base + next_seq) % seq_size, 0, 0, 0,
-                                             data[next_seq: next_seq + self.mss])
-                    self._send_to(new_segment.encode(), self.peer_addr)
+                    self.seq_num_payload_buff.put(((seq_base + next_seq) % seq_size, data[next_seq: next_seq + self.mss]))
                     next_seq += self.mss
-                elif send_base + send_window_len > len(data) and next_seq + self.mss > len(data):
-                    new_segment = RDTSegment(0, 0, (seq_base + next_seq) % seq_size, 0, 0, 0, data[next_seq:])
-                    self._send_to(new_segment.encode(), self.peer_addr)
+                elif send_base + send_window_len > len(data) > next_seq and next_seq + self.mss > len(data):
+                    self.seq_num_payload_buff.put(((seq_base + next_seq) % seq_size, data[next_seq:]))
                     next_seq = len(data)
                 else:
                     break
             # receive ack
             send_base_seq = (seq_base + send_base) % seq_size
-            while True:
-                ack_rcv, addr = self._recv_from(DEFAULT_BUFF_SIZE)
-                if ack_rcv is not None:
-                    ack_segment = RDTSegment.parse(ack_rcv)
-                    # move window
-                    if ack_segment.ack_num > send_base_seq:
-                        send_base += (ack_segment.ack_num - send_base_seq)
-                        congestion_control_newAck(ack_segment.ack_num - send_base_seq)
-                        fr_cnt = 0
-                        continue
-                    elif ack_segment.ack_num < send_base_seq and (ctypes.c_int32)(
-                            send_base_seq - ack_segment.ack_num) < 0:
-                        send_base += (seq_size + ack_segment.ack_num - send_base_seq)
-                        congestion_control_newAck(seq_size + ack_segment.ack_num - send_base_seq)
-                        fr_cnt = 0
-                        continue
-                    # acculate for fast retransmission
+            while not self.ack_num_option_buff.empty():
+                ack_tuple = self.ack_num_option_buff.get()
+                ack_num = ack_tuple[0]
+                options = ack_tuple[1]
+                # move window
+                if ack_num > send_base_seq:
+                    send_base += (ack_num - send_base_seq)
+                    congestion_control_newAck(ack_num - send_base_seq)
+                    fr_cnt = 0
+                    continue
+                elif ack_num < send_base_seq and send_base_seq+send_window_len >= seq_size+ack_num+1:
+                    send_base += (seq_size + ack_num - send_base_seq)
+                    congestion_control_newAck(seq_size + ack_num - send_base_seq)
+                    fr_cnt = 0
+                    continue
+                # acculate for fast retransmission
+                elif options.has_key(5):
+                    if fr_cnt == 0:
+                        unACK_range[0] = send_base_seq
+                        unACK_range[1] = options[5][1]
+                        fr_cnt += 1
                     else:
-                        if fr_cnt == 0:
-                            unACK_range[0] = send_base_seq
-                            unACK_range[1] = ack_segment.options[5][1]
-                            fr_cnt += 1
-                        else:
-                            if (ack_segment.options[5][1] < unACK_range[1] and (ctypes.c_int32)(
-                                    unACK_range[1] - ack_segment.options[5][1]) > 0) or (
-                                    ack_segment.options[5][1] > unACK_range[1] and (ctypes.c_int32)(
-                                unACK_range[1] - ack_segment.options[5][1]) < 0):
-                                unACK_range[1] = ack_segment.options[5][1]
-                            fr_cnt += 1
-                            # judge fast retransimission
-                            if fr_cnt == 3:
-                                fr_base = send_base
-                                if unACK_range[0] < unACK_range[1]:
-                                    fr_len = unACK_range[1] - unACK_range[0]
+                        if (options[5][1] < unACK_range[1] and unACK_range+seq_size+1 >= options[5][1]+send_window_len) or (
+                                options[5][1] > unACK_range[1] and unACK_range+seq_size+1 <= options[5][1]+send_window_len):
+                            unACK_range[1] = options[5][1]
+                        fr_cnt += 1
+                        # judge fast retransimission
+                        if fr_cnt == 3:
+                            fr_base = send_base
+                            if unACK_range[0] < unACK_range[1]:
+                                fr_len = unACK_range[1] - unACK_range[0]
+                            else:
+                                fr_len = unACK_range[1] - unACK_range[0] + seq_size
+                            fr_next = fr_base
+                            while True:
+                                if fr_base + fr_len - fr_next >= self.mss:
+                                    self.seq_num_payload_buff.put(((seq_base + fr_next) % seq_size,data[fr_next: fr_next + self.mss]))
+                                    fr_next += self.mss
+                                elif fr_next < len(data):
+                                    self.seq_num_payload_buff.put(((seq_base + fr_next) % seq_size,data[fr_next:]))
+                                    fr_next = len(data)
                                 else:
-                                    fr_len = unACK_range[1] - unACK_range[0] + seq_size
-                                fr_next = fr_base
-                                while True:
-                                    if fr_base + fr_len - fr_next >= self.mss:
-                                        new_segment = RDTSegment(0, 0, (seq_base + fr_next) % seq_size, 0, 0, 0,
-                                                                 data[fr_next: fr_next + self.mss])
-                                        self._send_to(new_segment.encode(), self.peer_addr)
-                                        fr_next += self.mss
-                                    elif fr_next < len(data):
-                                        new_segment = RDTSegment(0, 0, (seq_base + fr_next) % seq_size, 0, 0, 0,
-                                                                 data[fr_next:])
-                                        self._send_to(new_segment.encode(), self.peer_addr)
-                                        fr_next = len(data)
-                                    else:
-                                        break
-                                fr_cnt = 0
-                                congestionCtrl_state = 2
-                                congestion_control_newAck(self.mss)
-                                timer_start = time.time()
+                                    break
+                            fr_cnt = 0
+                            congestionCtrl_state = 2
+                            congestion_control_newAck(self.mss)
+                            timer_start = time.time()
+                # without operation
+                else:
+                    continue
                 # judge time out
                 if time.time() - timer_start > time_out:
                     new_segment = RDTSegment(0, 0, seq_base + send_base, 0, 0, 0,

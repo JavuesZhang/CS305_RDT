@@ -13,7 +13,7 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format='[CLIENT %(levelname)s] %(asctime)s: %(message)s')
     client = RDTSocket()
     client.connect((SERVER_ADDR, SERVER_PORT))
-    # client.send(MESSAGE.encode())
+    client.send(MESSAGE.encode())
     # data = client.recv(BUFFER_SIZE)
     # assert data == MESSAGE
     # client.close()
