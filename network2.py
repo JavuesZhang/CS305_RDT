@@ -56,14 +56,14 @@ class Server(ThreadingUDPServer):
                 if random.random() < corrupt_rate:
                     data[i] = data[:i] + (data[i]+1).to_bytes(1,'big) + data[i+1:]
             """
+            if random.random() < loss_rate:
+                print(client_address, bytes_to_addr(data[:8]), "packet loss")
+                return
 
-        if random.random() < loss_rate:
-            print(client_address, network2, "packet loss")
-            return
+            for i in range(0, random.randint(0, 3)):
+                pos = random.randint(0, len(data)-1)
+                data[pos] = random.randint(0, 255)
 
-        for i in range(0, random.randint(0, 3)):
-            pos = random.randint(0, len(data) - 1)
-            data[pos] = random.randint(0, 255)
 
         """
         this part is not blocking and is executed by multiple threads in parallel
@@ -73,14 +73,13 @@ class Server(ThreadingUDPServer):
         time.sleep(random.random())
         """
 
-        # to = bytes_to_addr(data[:8])
-        print(client_address, network2)  # observe tht traffic
-        socket.sendto(addr_to_bytes(client_address) + data[8:], network2)
+        to = bytes_to_addr(data[:8])
+        print(client_address, to)  # observe tht traffic
+        socket.sendto(addr_to_bytes(client_address) + data[8:], to)
 
 
-server_address = ('127.0.0.1', 11223)
-network2 = ('127.0.0.1', 11224)
+server_address = ('127.0.0.1', 11224)
 
 if __name__ == '__main__':
-    with Server(server_address) as server:
-        server.serve_forever()
+    with Server(server_address) as server2:
+        server2.serve_forever()
