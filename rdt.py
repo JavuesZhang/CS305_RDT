@@ -277,6 +277,15 @@ class RDTSocket(UnreliableSocket):
                 send_window_len = threash + 3 * self.mss
                 congestionCtrl_state = 1
 
+        def timeout_rst(sample_new):
+            global sample_rtt, estimate_rtt, dev_rtt, time_out
+            alpha = 0.125
+            beta = 0.25
+            sample_rtt = sample_new
+            estimate_rtt = (1-alpha)*estimate_rtt + alpha*sample_rtt
+            dev_rtt = (1-beta)*dev_rtt + beta*abs(estimate_rtt-sample_rtt)
+            time_out = estimate_rtt + 4*dev_rtt
+
         # first sequence num
         seq_base = self.local_seq_num
         # location at data
@@ -284,7 +293,13 @@ class RDTSocket(UnreliableSocket):
         # location at data
         next_seq = 0
         send_window_len = self.mss
+
+        # parameter for timeout_judge
         time_out = self.rtt_orign
+        sample_rtt = 0
+        estimate_rtt = self.rtt_orign
+        dev_rtt = 0
+        #
         fr_cnt = 0
         unACK_range = [0, 0]
         seq_size = 1 << 32
@@ -310,11 +325,15 @@ class RDTSocket(UnreliableSocket):
                 # move window
                 if ack_num > send_base_seq:
                     send_base += (ack_num - send_base_seq)
+                    if ack_num - send_base_seq <= self.mss:
+                        timeout_rst(time.time()-timer_start)
                     congestion_control_newAck(ack_num - send_base_seq)
                     fr_cnt = 0
                     continue
                 elif ack_num < send_base_seq and send_base_seq + send_window_len >= seq_size + ack_num + 1:
-                    send_base += (seq_size + ack_num - send_base_seq)
+                    send_base += (seq_size + ack_num + 1 - send_base_seq)
+                    if seq_size + ack_num + 1 - send_base_seq <= self.mss:
+                        timeout_rst(time.time()-timer_start)
                     congestion_control_newAck(seq_size + ack_num - send_base_seq)
                     fr_cnt = 0
                     continue
@@ -358,9 +377,7 @@ class RDTSocket(UnreliableSocket):
                     continue
                 # judge time out
                 if time.time() - timer_start > time_out:
-                    new_segment = RDTSegment(0, 0, seq_base + send_base, 0, 0, 0,
-                                             data[send_base: min(send_base + self.mss, len(data))])
-                    self._send_to(new_segment, self.peer_addr)
+                    self.seq_num_payload_buff.put(((seq_base + send_base) % seq_size, data[send_base: min(send_base + self.mss, len(data))]))
                     timer_start = time.time()
                     send_window_len = 0
                     congestion_control_newAck(self.mss)
