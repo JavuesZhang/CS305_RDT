@@ -121,7 +121,7 @@ class RDTSocket(UnreliableSocket):
             #     break
 
             if rdt_seg.syn:
-                seq_num = random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
+                seq_num = 0  # random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
                 ack_num = rdt_seg.seq_num + 1
                 syn_ack_seg = RDTSegment(rdt_seg.dest_port, rdt_seg.src_port, seq_num, ack_num,
                                          ack=True, syn=True)
@@ -139,7 +139,7 @@ class RDTSocket(UnreliableSocket):
                 # Retransmission mechanism
                 self.recv_win_size = DEFAULT_WIN_SIZE
                 conn.local_seq_num = rdt_seg.ack_num
-                conn.local_ack_num = rdt_seg.seq_num + 1
+                conn.local_ack_num = rdt_seg.seq_num
                 # socket
                 conn.local_addr = self.local_addr
                 conn.peer_addr = addr
@@ -178,7 +178,7 @@ class RDTSocket(UnreliableSocket):
         client_logger.info(f"client [{self.getsockname()}] initiate connection request to server [{address}].")
 
         # send syn pkt
-        self.local_seq_num = random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
+        self.local_seq_num = 0  # random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
         self.local_ack_num = 0
         syn_seg = RDTSegment(self.local_addr[1], address[1], self.local_seq_num, self.local_ack_num, syn=True)
         self._send_to(syn_seg, address)
@@ -232,6 +232,7 @@ class RDTSocket(UnreliableSocket):
         # TODO: YOUR CODE HERE                                                      #
         #############################################################################
         timeout_sec = self.gettimeout()
+        timeout_sec = None
         if timeout_sec is None:
             while len(self.data_buff) == 0:
                 pass
@@ -264,29 +265,6 @@ class RDTSocket(UnreliableSocket):
         congestionCtrl_state = 0
         threash = 1 << 32
 
-        def congestion_control_newAck(ack_size):
-            global congestionCtrl_state, send_window_len, threash
-            if congestionCtrl_state == 0:
-                send_window_len += ack_size
-                if send_window_len >= threash:
-                    congestionCtrl_state = 1
-                    send_window_len = threash
-            if congestionCtrl_state == 1:
-                send_window_len += int((ack_size / send_window_len) * self.mss)
-            if congestionCtrl_state == 2:
-                threash = send_window_len / 2
-                send_window_len = threash + 3 * self.mss
-                congestionCtrl_state = 1
-
-        def timeout_rst(sample_new):
-            global sample_rtt, estimate_rtt, dev_rtt, time_out
-            alpha = 0.125
-            beta = 0.25
-            sample_rtt = sample_new
-            estimate_rtt = (1 - alpha) * estimate_rtt + alpha * sample_rtt
-            dev_rtt = (1 - beta) * dev_rtt + beta * abs(estimate_rtt - sample_rtt)
-            time_out = estimate_rtt + 4 * dev_rtt
-
         # first sequence num
         seq_base = self.local_seq_num
         # location at data
@@ -304,6 +282,30 @@ class RDTSocket(UnreliableSocket):
         fr_cnt = 0
         unACK_range = [0, 0]
         seq_size = 1 << 32
+
+        def congestion_control_newAck(ack_size):
+            nonlocal congestionCtrl_state, send_window_len, threash
+            if congestionCtrl_state == 0:
+                send_window_len += ack_size
+                if send_window_len >= threash:
+                    congestionCtrl_state = 1
+                    send_window_len = threash
+            if congestionCtrl_state == 1:
+                send_window_len += int((ack_size / send_window_len) * self.mss)
+            if congestionCtrl_state == 2:
+                threash = send_window_len / 2
+                send_window_len = threash + 3 * self.mss
+                congestionCtrl_state = 1
+
+        def timeout_rst(sample_new):
+            nonlocal sample_rtt, estimate_rtt, dev_rtt, time_out
+            alpha = 0.125
+            beta = 0.25
+            sample_rtt = sample_new
+            estimate_rtt = (1 - alpha) * estimate_rtt + alpha * sample_rtt
+            dev_rtt = (1 - beta) * dev_rtt + beta * abs(estimate_rtt - sample_rtt)
+            time_out = estimate_rtt + 4 * dev_rtt
+
         while True:
             # divide segments in send_window and send them
             timer_start = time.time()
@@ -323,6 +325,8 @@ class RDTSocket(UnreliableSocket):
                 ack_tuple = self.ack_num_option_buff.get()
                 ack_num = ack_tuple[0]
                 options = ack_tuple[1]
+                if ack_num == seq_base + len(data):
+                    return
                 # move window
                 if ack_num > send_base_seq:
                     send_base += (ack_num - send_base_seq)
@@ -496,17 +500,21 @@ class RDTSocket(UnreliableSocket):
         """
         if self.is_server or self.is_master_server:
             def recvfrom_func(bufsize) -> ('RDTSegment', tuple):
-                while True:
-                    # time.sleep(0.01)
+                timeout_sec = self.gettimeout()
+                if timeout_sec is None:
+                    timeout_sec = 1000
+                tout = time.time() + timeout_sec
+                while time.time() < tout:
                     if not self.segment_buff.empty():
                         seg, addr = self.segment_buff.get()
                         rdt_seg = RDTSegment.parse(seg)
                         if rdt_seg:
-                            break
+                            server_logger.info(
+                                f"Received: {self.peer_addr[0]} -> {self.local_addr[0]}  {rdt_seg.log_info()}")
+                            return rdt_seg, addr
                         server_logger.info(f"Server [{self.local_addr}] Received corrupted segment")
-                server_logger.info(
-                    f"Received: {self.peer_addr[0]} -> {self.local_addr[0]}  {rdt_seg.log_info()}")
-                return rdt_seg, addr
+
+                raise OSError
 
             return recvfrom_func
         else:
@@ -524,27 +532,28 @@ class RDTSocket(UnreliableSocket):
             return new_recv
 
     def _get_sendto(self, sock: 'RDTSocket'):
-        if self.is_server:
-            def new_send_func(rdt_seg: 'RDTSegment', addr):
-                server_logger.info(
-                    f"Sent    : {self.local_addr[0]} -> {self.peer_addr[0]}  {rdt_seg.log_info()}")
-                sock._send_to(rdt_seg.encode(), addr)
+        if self.is_server or self.is_master_server:
 
-            return new_send_func
-        elif self.is_master_server:
+            #     def new_send_func(rdt_seg: 'RDTSegment', addr):
+            #         server_logger.info(
+            #             f"Sent    : {self.local_addr[0]} -> {self.peer_addr[0]}  {rdt_seg.log_info()}")
+            #         sock._send_to(rdt_seg.encode(), addr)
+            #
+            #     return new_send_func
+            # elif self.is_master_server:
             def new_send_func(rdt_seg: 'RDTSegment', addr):
                 server_logger.info(
                     f"Sent    : {self.local_addr[0]} -> {self.peer_addr[0]}  {rdt_seg.log_info()}")
-                super(RDTSocket, self).sendto(rdt_seg.encode(), addr)
-                # self.sendto(rdt_seg.encode(), addr)
+                # super(RDTSocket, self).sendto(rdt_seg.encode(), addr)
+                sock.sendto(rdt_seg.encode(), addr)
 
             return new_send_func
         else:
             def new_send_func(rdt_seg: 'RDTSegment', addr):
                 client_logger.info(
                     f"Sent    : {self.local_addr[0]} -> {self.peer_addr[0]}  {rdt_seg.log_info()}")
-                super(RDTSocket, self).sendto(rdt_seg.encode(), addr)
-                # self.sendto(rdt_seg.encode(), addr)
+                # super(RDTSocket, self).sendto(rdt_seg.encode(), addr)
+                self.sendto(rdt_seg.encode(), addr)
 
             return new_send_func
 
@@ -559,8 +568,10 @@ class RDTSocket(UnreliableSocket):
             try:
                 rdt_seg, addr = self._recv_from(DEFAULT_BUFF_SIZE)
             except OSError:
+                print('recv time out')
                 if not self.seq_num_payload_buff.empty():
                     # need send data which come from func send()
+                    print('send1~~~~~~~~~~~~~~~~~~~~~~~~~~~')
                     seq_payload = self.seq_num_payload_buff.get()
                     seq_seg = RDTSegment(self.local_addr[1], self.peer_addr[1], seq_payload[0], self.local_ack_num,
                                          payload=seq_payload[1])
@@ -572,6 +583,7 @@ class RDTSocket(UnreliableSocket):
 
             data_len = len(rdt_seg.payload)
             if data_len != 0:
+                print(' why???????????????????????????????????')
                 # seq num is valid
                 ack_seg.ack = True
 
@@ -586,6 +598,7 @@ class RDTSocket(UnreliableSocket):
                     # seq_num equal recv window base
                     self.local_ack_num += data_len
                     self.data_buff.extend(rdt_seg.payload)
+                    ack_seg.ack_num = self.local_ack_num
                     while True:
                         # Cumulative confirmation
                         if self.main_pq.empty():
@@ -618,6 +631,7 @@ class RDTSocket(UnreliableSocket):
 
             if not self.seq_num_payload_buff.empty():
                 # need send data which come from func send()
+                print('send data ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  ??????????????????????????????????????')
                 seq_payload = self.seq_num_payload_buff.get()
                 ack_seg.seq_num = seq_payload[0]
                 ack_seg.payload = seq_payload[1]
@@ -625,7 +639,8 @@ class RDTSocket(UnreliableSocket):
                 ack_seg.seq_num = self.local_seq_num
                 ack_seg.payload = b''
 
-            self._send_to(ack_seg, addr)
+            if ack_seg.ack or len(ack_seg.payload) != 0:
+                self._send_to(ack_seg, addr)
 
 
 """
