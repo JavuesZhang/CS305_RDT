@@ -49,7 +49,6 @@ class RDTSocket(UnreliableSocket):
 
         # master server
         self.is_master_server = False
-        self.master_server_addr = ('127.0.0.1', 0)
         self.allow_accept = False
         self.data_center = None
         self.super_recvfrom = super().recvfrom
@@ -107,13 +106,13 @@ class RDTSocket(UnreliableSocket):
 
         if self.conn_cnt > self.max_conn:
             # raise exception
-            server_logger.info(f"The number of server [{self.master_server_addr}] connections has reached the maximum")
+            server_logger.info(f"The number of server [{self.local_addr}] connections has reached the maximum")
             return None, None
 
         self.allow_accept = True
         peer_set = set()
 
-        server_logger.info(f"Server [{self.master_server_addr}] is waiting for the client to connect")
+        server_logger.info(f"Server [{self.local_addr}] is waiting for the client to connect")
         while True:
             rdt_seg, addr = self._recv_from(DEFAULT_BUFF_SIZE)
 
@@ -132,7 +131,6 @@ class RDTSocket(UnreliableSocket):
             elif rdt_seg.ack and addr in peer_set:
                 self.data_center.add_sock(addr, conn)
                 # master server
-                conn.master_server_addr = self.master_server_addr
                 conn.data_center = self.data_center
                 # server
                 conn.is_server = True
@@ -146,7 +144,7 @@ class RDTSocket(UnreliableSocket):
                 conn._recv_from = conn._get_recvfrom(conn)
                 conn._send_to = conn._get_sendto(self)
 
-                server_logger.info(f"Server [{self.master_server_addr}] accepts the connection from client [{addr}]")
+                server_logger.info(f"Server [{self.local_addr}] accepts the connection from client [{addr}]")
                 break
 
         self.allow_accept = False
@@ -175,7 +173,7 @@ class RDTSocket(UnreliableSocket):
         self.recv_win_size = DEFAULT_WIN_SIZE
         self.peer_addr = address
 
-        client_logger.info(f"client [{self.getsockname()}] initiate connection request to server [{address}].")
+        client_logger.info(f"client [{self.local_addr}] initiate connection request to server [{address}].")
 
         # send syn pkt
         self.local_seq_num = 0  # random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
@@ -418,9 +416,9 @@ class RDTSocket(UnreliableSocket):
             client_logger.info(
                 f"client [{self.local_addr[0]}] attempts to close the connection with server [{self.peer_addr}]")
             self.recv_thread.stop()
-            fin_seg = RDTSegment(self.getsockname()[1], self.peer_addr[1], self.local_seq_num, self.local_ack_num,
+            fin_seg = RDTSegment(self.local_addr[1], self.peer_addr[1], self.local_seq_num, self.local_ack_num,
                                  fin=True)
-            ack_seg = RDTSegment(self.getsockname()[1], self.peer_addr[1], self.local_seq_num,
+            ack_seg = RDTSegment(self.local_addr[1], self.peer_addr[1], self.local_seq_num,
                                  0, ack=True)
             self.settimeout(1)
             while True:
@@ -430,7 +428,7 @@ class RDTSocket(UnreliableSocket):
                     try:
                         peer_seg, addr = self._recv_from(DEFAULT_BUFF_SIZE)
                         if peer_seg.fin:
-                            ack_seg = RDTSegment(self.getsockname()[1], self.peer_addr[1], self.local_seq_num,
+                            ack_seg = RDTSegment(self.local_addr[1], self.peer_addr[1], self.local_seq_num,
                                                  peer_seg.seq_num + 1, ack=True)
                             self._send_to(ack_seg, self.peer_addr)
                         else:
@@ -449,7 +447,7 @@ class RDTSocket(UnreliableSocket):
                 if peer_seg.ack and peer_seg.ack_num == self.local_seq_num + 1:
                     self.peer_closing = True
                 elif peer_seg.fin:
-                    ack_seg = RDTSegment(self.getsockname()[1], self.peer_addr[1], self.local_seq_num,
+                    ack_seg = RDTSegment(self.local_addr[1], self.peer_addr[1], self.local_seq_num,
                                          peer_seg.seq_num + 1, ack=True)
                     self._send_to(ack_seg, self.peer_addr)
                     self.peer_closed = True
@@ -458,7 +456,7 @@ class RDTSocket(UnreliableSocket):
             self._send_to = None
             self.local_closed = True
             client_logger.info(
-                f"client [{self.getsockname()}] successfully closed the connection with server [{self.peer_addr}]")
+                f"client [{self.local_addr}] successfully closed the connection with server [{self.peer_addr}]")
 
         #############################################################################
         #                             END OF YOUR CODE                              #
@@ -476,22 +474,16 @@ class RDTSocket(UnreliableSocket):
             self._recv_from = self._get_recvfrom(self)
             self._send_to = self._get_sendto(self)
             try:
-                self.master_server_addr = super(RDTSocket, self).getsockname()
+                self.local_addr = super(RDTSocket, self).getsockname()
             except OSError:
                 self.bind(('127.0.0.1', 0))
-                self.master_server_addr = super(RDTSocket, self).getsockname()
-            self.local_addr = self.master_server_addr
+                self.local_addr = super(RDTSocket, self).getsockname()
             self.data_center = DataCenter(self)
             self.data_center.start()
         else:
             self.max_conn = max_conn
 
     def getsockname(self) -> (str, int):
-        # try:
-        #     addr = super(RDTSocket, self).getsockname()
-        #     return addr
-        # except OSError:
-        #     return self.master_server_addr
         return self.local_addr
 
     def _get_recvfrom(self, sock: 'RDTSocket'):
@@ -596,7 +588,7 @@ class RDTSocket(UnreliableSocket):
                     ack_seg.ack_num = self.local_ack_num
                 elif self.local_ack_num == rdt_seg.seq_num:
                     # seq_num equal recv window base
-                    self.local_ack_num += data_len
+                    self.local_ack_num = (self.local_ack_num +  data_len) % RDTSegment.SEQ_NUM_BOUND
                     self.data_buff.extend(rdt_seg.payload)
                     ack_seg.ack_num = self.local_ack_num
                     while True:
@@ -604,8 +596,8 @@ class RDTSocket(UnreliableSocket):
                         if self.main_pq.empty():
                             if self.sub_pq.empty():
                                 break
-                            self.main_pq = self.sub_pq
-                            self.sub_pq = PriorityQueue()
+                            self.main_pq.queue = self.sub_pq.queue
+                            self.sub_pq.queue = []
                             continue
                         min_ack_range = self.main_pq.queue[0]
                         if self.local_ack_num == min_ack_range.value[0]:
@@ -625,10 +617,15 @@ class RDTSocket(UnreliableSocket):
                 elif rdt_seg.seq_num < self.local_ack_num + self.recv_win_size - RDTSegment.SEQ_NUM_BOUND:
                     # window rollback
                     self.sub_pq.put(AckRange(ack_range_tuple, rdt_seg.payload))
+                else:
+                    ack_seg.ack = False
+                    ack_seg.options = {}
             else:
                 ack_seg.ack = False
                 ack_seg.options = {}
 
+            if rdt_seg.fin:
+                pass
             if not self.seq_num_payload_buff.empty():
                 # need send data which come from func send()
                 print('send data ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  ??????????????????????????????????????')
@@ -709,7 +706,6 @@ class DataCenter(threading.Thread):
         super().setName(name)
 
     def run(self):
-        # listen_addr = self.data_entrance.getsockname()
         server_logger.info("DataCenter start work...")
         while self.__running.isSet():
             self.__flag.wait()  # 为True时立即返回, 为False时阻塞直到self.__flag为True后返回
@@ -906,7 +902,7 @@ class RDTSegment:
         if 5 in self.options:
             sack_edge = self.options.get(5)
             sack_cnt = len(sack_edge)
-            options_byte.extend(struct.pack('!BBBB', 1, 1, 5, sack_cnt + 2))
+            options_byte.extend(struct.pack('!BBBB', 1, 1, 5, sack_cnt << 1 + 2))
             for i, j in sack_edge:
                 options_byte.extend(struct.pack('!LL', i, j))
         return bytes(options_byte)
@@ -939,7 +935,7 @@ class RDTSegment:
 
         src_port, dest_port, seq_num, ack_num = struct.unpack('!HHLL', head[0:12])
         flags, unused, checksum = struct.unpack('!BBH', head[12:16])
-        head_length = (flags & 0xFF) >> 2
+        head_length = (flags & 0xF0) >> 2
         payload = segment[head_length:]
         rdt_seg = RDTSegment(src_port, dest_port, seq_num, ack_num, DEFAULT_WIN_SIZE, checksum, payload)
         rdt_seg._decode_flags(flags)
