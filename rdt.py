@@ -51,24 +51,24 @@ class RDTSocket(UnreliableSocket):
         self.is_master_server = False
         self.allow_accept = False
         self.data_center = None
-        self.super_recvfrom = super().recvfrom
+        self.super_recvfrom = super().recvfrom  # Provided to data_center for use
         self.conn_cnt = -1
         self.max_conn = 10
 
         # server
         self.is_server = False
-        self.busy = False
         self.segment_buff = queue.Queue()
         self.data_buff = bytearray()
 
         # Retransmission mechanism
-        self.recv_win_size = 0  # recv window size
+        self.recv_win_size = DEFAULT_WIN_SIZE  # recv window size
         self.local_seq_num = 0  # the position of next byte send in send window
         self.local_ack_num = 0  # the position of the next byte of the expected ack in recv window
         self.mss = 1460
         self.rtt_orign = 10
 
         # socket
+        self.busy = False
         self.local_addr = ('0.0.0.0', 0)
         self.peer_addr = ('255.255.255.255', 0)
         self.ack_num_option_buff = queue.Queue()
@@ -102,7 +102,7 @@ class RDTSocket(UnreliableSocket):
         # TODO: YOUR CODE HERE                                                      #
         #############################################################################
         if self.conn_cnt == -1:
-            self.listen(10)
+            self.listen(30)
 
         if self.conn_cnt > self.max_conn:
             # raise exception
@@ -114,13 +114,13 @@ class RDTSocket(UnreliableSocket):
 
         server_logger.info(f"Server [{self.local_addr}] is waiting for the client to connect")
         while True:
-            rdt_seg, addr = self._recv_from(DEFAULT_BUFF_SIZE)
+            rdt_seg, addr = self._recv_from()
 
-            # if time_out
-            #     break
+            if rdt_seg is None:
+                continue
 
             if rdt_seg.syn:
-                seq_num = 0  # random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
+                seq_num = 0  # TODO: random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
                 ack_num = rdt_seg.seq_num + 1
                 syn_ack_seg = RDTSegment(rdt_seg.dest_port, rdt_seg.src_port, seq_num, ack_num,
                                          ack=True, syn=True)
@@ -135,16 +135,18 @@ class RDTSocket(UnreliableSocket):
                 # server
                 conn.is_server = True
                 # Retransmission mechanism
-                self.recv_win_size = DEFAULT_WIN_SIZE
+                conn.recv_win_size = DEFAULT_WIN_SIZE
                 conn.local_seq_num = rdt_seg.ack_num
                 conn.local_ack_num = rdt_seg.seq_num
                 # socket
                 conn.local_addr = self.local_addr
                 conn.peer_addr = addr
-                conn._recv_from = conn._get_recvfrom(conn)
-                conn._send_to = conn._get_sendto(self)
+                conn._recv_from = conn._server_recvfrom
+                conn._send_to = conn._server_sendto
 
-                server_logger.info(f"Server [{self.local_addr}] accepts the connection from client [{addr}]")
+                server_logger.info(
+                    f"Server [{self.local_addr}] accepts the connection from client [{addr}], start processing segment")
+                conn.recv_thread.start()
                 break
 
         self.allow_accept = False
@@ -168,26 +170,25 @@ class RDTSocket(UnreliableSocket):
             self.bind(("127.0.0.1", 0))
             self.local_addr = super(RDTSocket, self).getsockname()
             client_logger.info(f"Unbinding address, randomly bind one, at {self.local_addr}")
-        self._send_to = self._get_sendto(self)
-        self._recv_from = self._get_recvfrom(self)
+        self._send_to = self._client_sendto
+        self._recv_from = self._client_recvfrom
         self.recv_win_size = DEFAULT_WIN_SIZE
         self.peer_addr = address
 
         client_logger.info(f"client [{self.local_addr}] initiate connection request to server [{address}].")
 
         # send syn pkt
-        self.local_seq_num = 0  # random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
+        self.local_seq_num = 0  # TODO: random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
         self.local_ack_num = 0
         syn_seg = RDTSegment(self.local_addr[1], address[1], self.local_seq_num, self.local_ack_num, syn=True)
         self._send_to(syn_seg, address)
 
-        self.settimeout(2)
         try_conn_cnt = 1
         while True:
-            try:
-                rdt_seg, addr = self._recv_from(DEFAULT_BUFF_SIZE)
+            rdt_seg, addr = self._recv_from(timeout=1)
+            if rdt_seg:
                 try_conn_cnt = 1
-            except OSError:
+            else:
                 if try_conn_cnt > 5:
                     client_logger.info("Request no response, exit connection request.")
                     return
@@ -196,9 +197,6 @@ class RDTSocket(UnreliableSocket):
                 client_logger.info("request timeout, try again.")
                 continue
 
-            # if time_out
-            #     break
-            # if syn & ack, send ack
             if address == addr and rdt_seg.syn and rdt_seg.ack and self.local_seq_num + 1 == rdt_seg.ack_num:
                 self.local_ack_num = rdt_seg.seq_num + 1
                 self.local_seq_num = rdt_seg.ack_num
@@ -207,8 +205,7 @@ class RDTSocket(UnreliableSocket):
                 self._send_to(ack_seg, address)
                 break
 
-        self.settimeout(None)
-        client_logger.info(f"client [{self.local_addr}] is connected to server [{address}].")
+        client_logger.info(f"Client [{self.local_addr}] is connected to server [{address}], start processing segment.")
         self.recv_thread.start()
         #############################################################################
         #                             END OF YOUR CODE                              #
@@ -218,19 +215,17 @@ class RDTSocket(UnreliableSocket):
         """
         Receive data from the socket.
         The return value is a bytes object representing the data received.
-        The maximum amount of data to be received at once is specified by bufsize.
+        The maximum amount of data to be received at once is specified by buff size.
 
         Note that ONLY data send by the peer should be accepted.
         In other words, if someone else sends data to you from another address,
         it MUST NOT affect the data returned by this function.
         """
-        data = None
         assert self._recv_from, "Connection not established yet. Use recvfrom instead."
         #############################################################################
         # TODO: YOUR CODE HERE                                                      #
         #############################################################################
         timeout_sec = self.gettimeout()
-        timeout_sec = None
         if timeout_sec is None:
             while len(self.data_buff) == 0:
                 pass
@@ -415,7 +410,7 @@ class RDTSocket(UnreliableSocket):
         else:
             client_logger.info(
                 f"client [{self.local_addr[0]}] attempts to close the connection with server [{self.peer_addr}]")
-            self.recv_thread.stop()
+
             fin_seg = RDTSegment(self.local_addr[1], self.peer_addr[1], self.local_seq_num, self.local_ack_num,
                                  fin=True)
             ack_seg = RDTSegment(self.local_addr[1], self.peer_addr[1], self.local_seq_num,
@@ -426,7 +421,7 @@ class RDTSocket(UnreliableSocket):
                     self._send_to(fin_seg, self.peer_addr)
                 elif self.peer_closed:
                     try:
-                        peer_seg, addr = self._recv_from(DEFAULT_BUFF_SIZE)
+                        peer_seg, addr = self._recv_from()
                         if peer_seg.fin:
                             ack_seg = RDTSegment(self.local_addr[1], self.peer_addr[1], self.local_seq_num,
                                                  peer_seg.seq_num + 1, ack=True)
@@ -440,7 +435,7 @@ class RDTSocket(UnreliableSocket):
                     self._send_to(ack_seg, self.peer_addr)
 
                 try:
-                    peer_seg, addr = self._recv_from(DEFAULT_BUFF_SIZE)
+                    peer_seg, addr = self._recv_from()
                 except OSError:
                     continue
 
@@ -471,8 +466,8 @@ class RDTSocket(UnreliableSocket):
             self.max_conn = max_conn
             self.conn_cnt = 0
             self.is_master_server = True
-            self._recv_from = self._get_recvfrom(self)
-            self._send_to = self._get_sendto(self)
+            self._recv_from = self._server_recvfrom
+            self._send_to = self._server_sendto
             try:
                 self.local_addr = super(RDTSocket, self).getsockname()
             except OSError:
@@ -486,84 +481,81 @@ class RDTSocket(UnreliableSocket):
     def getsockname(self) -> (str, int):
         return self.local_addr
 
-    def _get_recvfrom(self, sock: 'RDTSocket'):
+    def _server_recvfrom(self, timeout: float = None) -> ('RDTSegment', tuple):
         """
-
+        Get RDTSegment from segment buffer, Provided to the server or master server for use
+        :param timeout: unit seconds
+        :return: None if timeout, else not corrupt RDTSegment
         """
-        if self.is_server or self.is_master_server:
-            def recvfrom_func(bufsize) -> ('RDTSegment', tuple):
-                timeout_sec = self.gettimeout()
-                if timeout_sec is None:
-                    timeout_sec = 1000
-                tout = time.time() + timeout_sec
-                while time.time() < tout:
-                    if not self.segment_buff.empty():
-                        seg, addr = self.segment_buff.get()
-                        rdt_seg = RDTSegment.parse(seg)
-                        if rdt_seg:
-                            server_logger.info(
-                                f"Received: {self.peer_addr[0]} -> {self.local_addr[0]}  {rdt_seg.log_info()}")
-                            return rdt_seg, addr
-                        server_logger.info(f"Server [{self.local_addr}] Received corrupted segment")
-
-                raise OSError
-
-            return recvfrom_func
-        else:
-            def new_recv(bufsize) -> ('RDTSegment', tuple):
-                while True:
-                    data, frm = super(RDTSocket, self).recvfrom(bufsize)
-                    rdt_seg = RDTSegment.parse(data)
-                    if rdt_seg:
-                        break
-                    client_logger.info(f"Client [{self.local_addr}] Received corrupted segment")
-                client_logger.info(
-                    f"Received: {self.peer_addr[0]} -> {self.local_addr[0]}  {rdt_seg.log_info()}")
-                return rdt_seg, frm
-
-            return new_recv
-
-    def _get_sendto(self, sock: 'RDTSocket'):
-        if self.is_server or self.is_master_server:
-
-            #     def new_send_func(rdt_seg: 'RDTSegment', addr):
-            #         server_logger.info(
-            #             f"Sent    : {self.local_addr[0]} -> {self.peer_addr[0]}  {rdt_seg.log_info()}")
-            #         sock._send_to(rdt_seg.encode(), addr)
-            #
-            #     return new_send_func
-            # elif self.is_master_server:
-            def new_send_func(rdt_seg: 'RDTSegment', addr):
+        if timeout is None:
+            timeout = 1000
+        tout = time.time() + timeout
+        while time.time() < tout:
+            if not self.segment_buff.empty():
+                seg, addr = self.segment_buff.get()
                 server_logger.info(
-                    f"Sent    : {self.local_addr[0]} -> {self.peer_addr[0]}  {rdt_seg.log_info()}")
-                # super(RDTSocket, self).sendto(rdt_seg.encode(), addr)
-                sock.sendto(rdt_seg.encode(), addr)
+                    f'Take out segment from  ({self.local_addr[0]}, {self.local_addr[1]}, {addr[0]}, {addr[1]})')
+                rdt_seg = RDTSegment.parse(seg)
+                if rdt_seg:
+                    server_logger.info(
+                        f"Received: {self.peer_addr[0]} -> {self.local_addr[0]}  {rdt_seg.log_info()}")
+                    return rdt_seg, addr
+                server_logger.info(f"Server [{self.local_addr}] Received corrupted segment")
+        return None, None
 
-            return new_send_func
-        else:
-            def new_send_func(rdt_seg: 'RDTSegment', addr):
-                client_logger.info(
-                    f"Sent    : {self.local_addr[0]} -> {self.peer_addr[0]}  {rdt_seg.log_info()}")
-                # super(RDTSocket, self).sendto(rdt_seg.encode(), addr)
-                self.sendto(rdt_seg.encode(), addr)
+    def _client_recvfrom(self, timeout: float = None) -> ('RDTSegment', tuple):
+        """
+        Get RDTSegment from segment buffer, Provided to the client for use
+        :param timeout: unit seconds
+        :return: None if timeout, else not corrupt RDTSegment
+        """
+        timeout_sec = super().gettimeout()
+        super().settimeout(timeout)
+        try:
+            while True:
+                data, frm = super().recvfrom(DEFAULT_BUFF_SIZE)
+                rdt_seg = RDTSegment.parse(data)
+                if rdt_seg:
+                    client_logger.info(
+                        f"Received: {self.peer_addr[0]} -> {self.local_addr[0]}  {rdt_seg.log_info()}")
+                    super().settimeout(timeout_sec)
+                    return rdt_seg, frm
+                client_logger.info(f"Client [{self.local_addr}] Received corrupted segment")
+        except OSError:
+            return None, None
 
-            return new_send_func
+    def _server_sendto(self, rdt_seg: 'RDTSegment', addr):
+        """
+        Send RDTSegment, Provided to the server or master server for use
+        :param rdt_seg: RDTSegment needed to send
+        :param addr: Destination address
+        """
+        server_logger.info(
+            f"Sent    : {self.local_addr[0]} -> {self.peer_addr[0]}  {rdt_seg.log_info()}")
+        # super(RDTSocket, self).sendto(rdt_seg.encode(), addr)
+        self.data_center.data_entrance.sendto(rdt_seg.encode(), addr)
+
+    def _client_sendto(self, rdt_seg: 'RDTSegment', addr):
+        """
+        Send RDTSegment, Provided to the client for use
+        :param rdt_seg: RDTSegment needed to send
+        :param addr: Destination address
+        """
+        client_logger.info(
+            f"Sent    : {self.local_addr[0]} -> {self.peer_addr[0]}  {rdt_seg.log_info()}")
+        # super(RDTSocket, self).sendto(rdt_seg.encode(), addr)
+        self.sendto(rdt_seg.encode(), addr)
 
     def _recv_segs_to_data_buff(self):
         """
         Receive and process the segment and add the processed data to the buff
         """
-        # recv_data = bytearray()
         ack_seg = RDTSegment(self.local_addr[1], self.peer_addr[1], 0, self.local_ack_num)
-        self.settimeout(1)
         while True:
-            try:
-                rdt_seg, addr = self._recv_from(DEFAULT_BUFF_SIZE)
-            except OSError:
-                print('recv time out')
+            rdt_seg, addr = self._recv_from(1)
+            if rdt_seg is None:
                 if not self.seq_num_payload_buff.empty():
                     # need send data which come from func send()
-                    print('send1~~~~~~~~~~~~~~~~~~~~~~~~~~~')
                     seq_payload = self.seq_num_payload_buff.get()
                     seq_seg = RDTSegment(self.local_addr[1], self.peer_addr[1], seq_payload[0], self.local_ack_num,
                                          payload=seq_payload[1])
@@ -575,7 +567,6 @@ class RDTSocket(UnreliableSocket):
 
             data_len = len(rdt_seg.payload)
             if data_len != 0:
-                print(' why???????????????????????????????????')
                 # seq num is valid
                 ack_seg.ack = True
 
@@ -588,7 +579,7 @@ class RDTSocket(UnreliableSocket):
                     ack_seg.ack_num = self.local_ack_num
                 elif self.local_ack_num == rdt_seg.seq_num:
                     # seq_num equal recv window base
-                    self.local_ack_num = (self.local_ack_num +  data_len) % RDTSegment.SEQ_NUM_BOUND
+                    self.local_ack_num = (self.local_ack_num + data_len) % RDTSegment.SEQ_NUM_BOUND
                     self.data_buff.extend(rdt_seg.payload)
                     ack_seg.ack_num = self.local_ack_num
                     while True:
@@ -628,7 +619,6 @@ class RDTSocket(UnreliableSocket):
                 pass
             if not self.seq_num_payload_buff.empty():
                 # need send data which come from func send()
-                print('send data ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  ??????????????????????????????????????')
                 seq_payload = self.seq_num_payload_buff.get()
                 ack_seg.seq_num = seq_payload[0]
                 ack_seg.payload = seq_payload[1]
@@ -649,27 +639,12 @@ You can define additional functions and classes to do thing such as packing/unpa
 class ProcessingSegment(threading.Thread):
     def __init__(self, rdt_socket: RDTSocket):
         threading.Thread.__init__(self)
-        self.__running = threading.Event()  # The identity used to stop the thread
-        self.__running.set()  # Initialization thread running
         self.rdt_socket = rdt_socket
 
     def run(self):
         self.rdt_socket.busy = True
-        if self.rdt_socket.is_server:
-            server_logger.info(f"Server [{self.rdt_socket.local_addr}] start processing segment")
-            self.rdt_socket._recv_segs_to_data_buff()
-        else:
-            client_logger.info(f"Client [{self.rdt_socket.local_addr}] start processing segment")
-            while self.__running.isSet():
-                self.rdt_socket._recv_segs_to_data_buff()
+        self.rdt_socket._recv_segs_to_data_buff()
         self.rdt_socket.busy = False
-
-    def stop(self) -> None:
-        """
-        Stop thread
-        :return:
-        """
-        self.__running.clear()
 
 
 class AckRange:
@@ -709,16 +684,12 @@ class DataCenter(threading.Thread):
         server_logger.info("DataCenter start work...")
         while self.__running.isSet():
             self.__flag.wait()  # 为True时立即返回, 为False时阻塞直到self.__flag为True后返回
-            # data, addr = self.data_entrance._recv_from(DEFAULT_BUFF_SIZE)
             data, addr = self.data_entrance.super_recvfrom(DEFAULT_BUFF_SIZE)
             if data:
                 if addr in self.socket_table:
                     sock = self.socket_table.get(addr)
                     sock.segment_buff.put((data, addr))
-                    print(f'Data distribution to {addr}')
-                    if not sock.busy:
-                        sock.recv_thread.start()
-                        # ProcessingSegment(sock).start()
+                    print(f'Data distribution to ({sock.local_addr[0]}, {sock.local_addr[1]}, {addr[0]}, {addr[1]})')
                 elif self.data_entrance.allow_accept:
                     self.data_entrance.segment_buff.put((data, addr))
 
