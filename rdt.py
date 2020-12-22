@@ -21,6 +21,8 @@ DEFAULT_BUFF_SIZE = 2048
 DEFAULT_WIN_SIZE = 65535
 CONSTANT2P32 = 4294967296  # 2^32
 
+alpha = 0.125
+beta = 0.25
 
 class RDTSocket(UnreliableSocket):
     """
@@ -65,7 +67,7 @@ class RDTSocket(UnreliableSocket):
         self.local_seq_num = 0  # the position of next byte send in send window
         self.local_ack_num = 0  # the position of the next byte of the expected ack in recv window
         self.mss = 1460
-        self.rtt_orign = 10
+        self.rtt_orign = 0.005
 
         # socket
         self.busy = False
@@ -185,6 +187,7 @@ class RDTSocket(UnreliableSocket):
         syn_seg = RDTSegment(self.local_addr[1], address[1], self.local_seq_num, self.local_ack_num, syn=True)
         self._send_to(syn_seg, address)
 
+        start_time = time.time()
         try_conn_cnt = 1
         while True:
             rdt_seg, addr = self._recv_from(timeout=0.1)
@@ -200,6 +203,7 @@ class RDTSocket(UnreliableSocket):
                 continue
 
             if address == addr and rdt_seg.syn and rdt_seg.ack and self.local_seq_num + 1 == rdt_seg.ack_num:
+                self.rtt_orign = time.time() - start_time
                 self.local_ack_num = rdt_seg.seq_num + 1
                 self.local_seq_num = rdt_seg.ack_num
                 ack_seg = RDTSegment(self.local_addr[1], rdt_seg.src_port, self.local_seq_num, self.local_ack_num,
@@ -294,8 +298,6 @@ class RDTSocket(UnreliableSocket):
 
         def timeout_rst(sample_new):
             nonlocal sample_rtt, estimate_rtt, dev_rtt, time_out
-            alpha = 0.125
-            beta = 0.25
             sample_rtt = sample_new
             estimate_rtt = (1 - alpha) * estimate_rtt + alpha * sample_rtt
             dev_rtt = (1 - beta) * dev_rtt + beta * abs(estimate_rtt - sample_rtt)
@@ -317,102 +319,110 @@ class RDTSocket(UnreliableSocket):
                 else:
                     break
             # receive ack
-            send_base_seq = (seq_base + send_base) % seq_size
-            while not self.ack_num_option_buff.empty():
-                ack_tuple = self.ack_num_option_buff.get()
-                ack_num = ack_tuple[0]
-                options = ack_tuple[1]
-                if ack_num == seq_base + len(data):
-                    return
-                # move window
-                if ack_num > send_base_seq:
-                    send_base += (ack_num - send_base_seq)
-                    if ack_num - send_base_seq <= self.mss:
-                        timeout_rst(time.time() - timer_start)
-                    congestion_control_newAck(ack_num - send_base_seq)
-                    fr_cnt = 0
-                    continue
-                elif ack_num < send_base_seq and send_base_seq + send_window_len >= seq_size + ack_num + 1:
-                    send_base += (seq_size + ack_num + 1 - send_base_seq)
-                    if seq_size + ack_num + 1 - send_base_seq <= self.mss:
-                        timeout_rst(time.time() - timer_start)
-                    congestion_control_newAck(seq_size + ack_num - send_base_seq)
-                    fr_cnt = 0
-                    continue
-                # acculate for fast retransmission
-                elif 5 in options:
-                    retr_range = options[5][0]
-                    if fr_cnt < 3:
-                        fr_cnt += 1
-                    else:
-                        unACK_range[0] = send_base_seq
-                        unACK_range[1] = retr_range[1]
-                        fr_base = send_base
-                        if unACK_range[0] < unACK_range[1]:
-                            fr_len = unACK_range[1] - unACK_range[0]
-                        else:
-                            fr_len = unACK_range[1] - unACK_range[0] + seq_size
-                        fr_next = fr_base
-                        while True:
-                            print(
-                                f'retransimission, seq_num={seq_base + fr_next} fr_base={fr_base} fr_len={fr_len} fr_next={fr_next}')
-                            if fr_base + fr_len - fr_next >= self.mss:
-                                self.seq_num_payload_buff.put(
-                                    ((seq_base + fr_next) % seq_size, data[fr_next: fr_next + self.mss]))
-                                fr_next += self.mss
-                            elif fr_next < len(data):
-                                self.seq_num_payload_buff.put(((seq_base + fr_next) % seq_size, data[fr_next:]))
-                                fr_next = len(data)
-                            else:
-                                break
-                        fr_cnt = 0
-                        congestionCtrl_state = 2
-                        congestion_control_newAck(self.mss)
+            while True:
+                send_base_seq = (seq_base + send_base) % seq_size
+                if not self.ack_num_option_buff.empty():
+                    ack_tuple = self.ack_num_option_buff.get()
+                    print(ack_tuple)
+                    ack_num = ack_tuple[0]
+                    options = ack_tuple[1]
+                    if ack_num == seq_base + len(data):
+                        return
+                    # move window
+                    if ack_num > send_base_seq:
+                        print(f'move window!, send_base_from={send_base} send_base_to={send_base + (ack_num - send_base_seq)}')
+                        send_base += (ack_num - send_base_seq)
+                        if ack_num - send_base_seq <= self.mss:
+                            timeout_rst(time.time() - timer_start)
                         timer_start = time.time()
+                        congestion_control_newAck(ack_num - send_base_seq)
+                        fr_cnt = 0
+                        continue
+                    elif ack_num < send_base_seq and send_base_seq + send_window_len >= seq_size + ack_num:
+                        print(
+                            f'move window rollback!, send_base_from={send_base} send_base_to={send_base + (seq_size + ack_num - send_base_seq)}')
+                        send_base += (seq_size + ack_num - send_base_seq)
+                        if seq_size + ack_num - send_base_seq <= self.mss:
+                            timeout_rst(time.time() - timer_start)
+                        congestion_control_newAck(seq_size + ack_num - send_base_seq)
+                        fr_cnt = 0
+                        continue
+                    # acculate for fast retransmission
+                    elif 5 in options:
+                        retr_range = options[5][0]
+                        if fr_cnt < 3:
+                            fr_cnt += 1
+                        else:
+                            unACK_range[0] = send_base_seq
+                            unACK_range[1] = retr_range[1]
+                            fr_base = send_base
+                            if unACK_range[0] < unACK_range[1]:
+                                fr_len = unACK_range[1] - unACK_range[0]
+                            else:
+                                fr_len = unACK_range[1] - unACK_range[0] + seq_size
+                            fr_next = fr_base
+                            while True:
+                                print(
+                                    f'retransimission, seq_num={seq_base + fr_next} fr_base={fr_base} fr_len={fr_len} fr_next={fr_next} unack={unACK_range}')
+                                if fr_base + fr_len - fr_next >= self.mss:
+                                    self.seq_num_payload_buff.put(
+                                        ((seq_base + fr_next) % seq_size, data[fr_next: fr_next + self.mss]))
+                                    fr_next += self.mss
+                                elif fr_base + fr_len - len(data) == 0:
+                                    self.seq_num_payload_buff.put(((seq_base + fr_next) % seq_size, data[fr_next:]))
+                                    fr_next = len(data)
+                                else:
+                                    break
+                            fr_cnt = 0
+                            congestionCtrl_state = 2
+                            congestion_control_newAck(self.mss)
+                            timer_start = time.time()
 
 
-                    # if fr_cnt == 0:
-                    #     unACK_range[0] = send_base_seq
-                    #     unACK_range[1] = retr_range[1]
-                    #     fr_cnt += 1
-                    # else:
-                    #     if (retr_range[1] < unACK_range[1] and unACK_range + seq_size + 1 >= retr_range[
-                    #         1] + send_window_len) or (
-                    #             retr_range[1] > unACK_range[1] and unACK_range + seq_size + 1 <= retr_range[
-                    #         1] + send_window_len):
-                    #         unACK_range[1] = retr_range[1]
-                    #     fr_cnt += 1
-                    #     # judge fast retransimission
-                    #     if fr_cnt == 3:
-                    #         fr_base = send_base
-                    #         if unACK_range[0] < unACK_range[1]:
-                    #             fr_len = unACK_range[1] - unACK_range[0]
-                    #         else:
-                    #             fr_len = unACK_range[1] - unACK_range[0] + seq_size
-                    #         fr_next = fr_base
-                    #         while True:
-                    #             print(
-                    #                 f'retransimission, seq_num={seq_base + fr_next} fr_base={fr_base} fr_len={fr_len} fr_next={fr_next}')
-                    #             if fr_base + fr_len - fr_next >= self.mss:
-                    #                 self.seq_num_payload_buff.put(
-                    #                     ((seq_base + fr_next) % seq_size, data[fr_next: fr_next + self.mss]))
-                    #                 fr_next += self.mss
-                    #             elif fr_next < len(data):
-                    #                 self.seq_num_payload_buff.put(((seq_base + fr_next) % seq_size, data[fr_next:]))
-                    #                 fr_next = len(data)
-                    #             else:
-                    #                 break
-                    #         fr_cnt = 0
-                    #         congestionCtrl_state = 2
-                    #         congestion_control_newAck(self.mss)
-                    #         timer_start = time.time()
-                # without operation
-                else:
-                    continue
+                        # if fr_cnt == 0:
+                        #     unACK_range[0] = send_base_seq
+                        #     unACK_range[1] = retr_range[1]
+                        #     fr_cnt += 1
+                        # else:
+                        #     if (retr_range[1] < unACK_range[1] and unACK_range + seq_size + 1 >= retr_range[
+                        #         1] + send_window_len) or (
+                        #             retr_range[1] > unACK_range[1] and unACK_range + seq_size + 1 <= retr_range[
+                        #         1] + send_window_len):
+                        #         unACK_range[1] = retr_range[1]
+                        #     fr_cnt += 1
+                        #     # judge fast retransimission
+                        #     if fr_cnt == 3:
+                        #         fr_base = send_base
+                        #         if unACK_range[0] < unACK_range[1]:
+                        #             fr_len = unACK_range[1] - unACK_range[0]
+                        #         else:
+                        #             fr_len = unACK_range[1] - unACK_range[0] + seq_size
+                        #         fr_next = fr_base
+                        #         while True:
+                        #             print(
+                        #                 f'retransimission, seq_num={seq_base + fr_next} fr_base={fr_base} fr_len={fr_len} fr_next={fr_next}')
+                        #             if fr_base + fr_len - fr_next >= self.mss:
+                        #                 self.seq_num_payload_buff.put(
+                        #                     ((seq_base + fr_next) % seq_size, data[fr_next: fr_next + self.mss]))
+                        #                 fr_next += self.mss
+                        #             elif fr_next < len(data):
+                        #                 self.seq_num_payload_buff.put(((seq_base + fr_next) % seq_size, data[fr_next:]))
+                        #                 fr_next = len(data)
+                        #             else:
+                        #                 break
+                        #         fr_cnt = 0
+                        #         congestionCtrl_state = 2
+                        #         congestion_control_newAck(self.mss)
+                        #         timer_start = time.time()
+                    # without operation
+                    else:
+                        continue
                 # judge time out
-                if time.time() - timer_start > time_out * 0.001:
-                    self.seq_num_payload_buff.put(
-                        ((seq_base + send_base) % seq_size, data[send_base: min(send_base + self.mss, len(data))]))
+                if time.time() - timer_start > time_out:
+                    print(f'timeout, time_from_start:{time.time() - timer_start}, time_out:{time_out}')
+                    buff = ((seq_base + send_base) % seq_size, data[send_base: min(send_base + self.mss, len(data))])
+                    if buff not in self.seq_num_payload_buff.queue:
+                        self.seq_num_payload_buff.put(buff)
                     timer_start = time.time()
                     send_window_len = 0
                     congestion_control_newAck(self.mss)
