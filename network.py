@@ -1,6 +1,7 @@
 from socket import socket, AF_INET, SOCK_DGRAM, inet_aton, inet_ntoa
 import random, time
 import threading, queue
+import rdt
 from socketserver import ThreadingUDPServer
 
 lock = threading.Lock()
@@ -54,17 +55,18 @@ class Server(ThreadingUDPServer):
                 return 
             for i in range(len(data)-1):
                 if random.random() < corrupt_rate:
-                    data[i] = data[:i] + (data[i]+1).to_bytes(1,'big) + data[i+1:]
+                    data = data[:i] + (data[i]+1).to_bytes(1,'big) + data[i+1:]
             """
 
-        if random.random() < loss_rate:
-            print(client_address, network2, "packet loss")
-            return
-
-        for i in range(0, random.randint(0, 3)):
-            pos = random.randint(0, len(data) - 1)
-            data[pos] = random.randint(0, 255)
-
+            if random.random() < loss_rate:
+                drop = rdt.RDTSegment.parse(data[8:])
+                print(client_address, bytes_to_addr(data[:8]), f" packet loss, {drop.log_info()}")
+                return
+            # data = bytearray(data)
+            # for i in range(0, random.randint(0, 3)):
+            #     pos = random.randint(0, len(data) - 1)
+            #     data[pos] = random.randint(0, 255)
+            # data = bytes(data)
         """
         this part is not blocking and is executed by multiple threads in parallel
         you can add random delay here, this would change the order of arrival at the receiver side.
@@ -73,9 +75,9 @@ class Server(ThreadingUDPServer):
         time.sleep(random.random())
         """
 
-        # to = bytes_to_addr(data[:8])
-        print(client_address, network2)  # observe tht traffic
-        socket.sendto(addr_to_bytes(client_address) + data[8:], network2)
+        to = bytes_to_addr(data[:8])
+        print(client_address, to)  # observe tht traffic
+        socket.sendto(addr_to_bytes(client_address) + data[8:], to)
 
 
 server_address = ('127.0.0.1', 11223)

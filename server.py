@@ -17,7 +17,7 @@ if __name__ == '__main__':
             conn, client = server.accept()
             data = bytearray()
             while True:
-                while len(data) < 5460:
+                while len(data) < 54600:
                     data.extend(conn.recv(BUFFER_SIZE))
                 print(f'server recv OK, data size: {len(data)}')
                 if not data:

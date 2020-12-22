@@ -21,12 +21,12 @@ if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format='[CLIENT %(levelname)s] %(asctime)s: %(message)s')
     client = RDTSocket()
     client.connect((SERVER_ADDR, SERVER_PORT))
-    MESSAGE = '0'*5460
+    MESSAGE = '0'*54600
     start = time.time()
     client.send(MESSAGE.encode())
     print(f'client send OK, data size: {len(MESSAGE)}')
     data = bytearray()
-    while len(data) < 5460:
+    while len(data) < 54600:
         data.extend(client.recv(BUFFER_SIZE))
         print(len(data))
     print(f'client recv OK, data size: {len(data)}')
