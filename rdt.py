@@ -327,6 +327,7 @@ class RDTSocket(UnreliableSocket):
                     ack_num = ack_tuple[0]
                     options = ack_tuple[1]
                     if ack_num == seq_base + len(data):
+                        self.local_seq_num += len(data)
                         return
                     # move window
                     if ack_num > send_base_seq:
@@ -599,7 +600,7 @@ class RDTSocket(UnreliableSocket):
         tmp_counter = 0
         ack_seg = RDTSegment(self.local_addr[1], self.peer_addr[1], 0, self.local_ack_num)
         while True:
-            rdt_seg, addr = self._recv_from(0.1)
+            rdt_seg, addr = self._recv_from(0.09)
             if rdt_seg is None:
                 if not self.seq_num_payload_buff.empty():
                     # need send data which come from func send()

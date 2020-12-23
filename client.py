@@ -3,11 +3,12 @@
 
 import logging
 import time
-from rdt import RDTSocket,RDTSegment
+from rdt import RDTSocket, RDTSegment
 
 SERVER_ADDR = '127.0.0.1'
 SERVER_PORT = 18888
-BUFFER_SIZE = 2048
+BUFFER_SIZE = 6144
+
 
 def unit_convert(value):
     units = ["B", "KB", "MB", "GB", "TB", "PB"]
@@ -17,21 +18,34 @@ def unit_convert(value):
             return "%.2f%s" % (value, units[i])
         value = value / size
 
+
+DATA_END = b'@'
+
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format='[CLIENT %(levelname)s] %(asctime)s: %(message)s')
     client = RDTSocket()
     client.connect((SERVER_ADDR, SERVER_PORT))
-    MESSAGE = '0'*54600
+    alice = open('alice.txt', 'rb')
+    MESSAGE = alice.read()
+    meg_len = len(MESSAGE)
     start = time.time()
-    client.send(MESSAGE.encode())
-    print(f'client send OK, data size: {len(MESSAGE)}')
+    client.send(MESSAGE)
+    mid = time.time()
+    print('-------------------------')
+    print(f'client send OK, data size: {unit_convert(len(MESSAGE))}, send time cost: {mid - start} s')
+    print('-------------------------')
     data = bytearray()
-    while len(data) < 54600:
+    time.sleep(1)
+    data.extend(client.recv(BUFFER_SIZE))
+    while len(data) != meg_len:
+        time.sleep(0.1)
         data.extend(client.recv(BUFFER_SIZE))
-        print(len(data))
+    end = time.time()
+    assert bytes(data) == MESSAGE
     print(f'client recv OK, data size: {len(data)}')
     print('==========================')
-    print(f'time cost: {time.time() - start} s,  data len: {unit_convert(len(MESSAGE.encode()))}')
+    print(f'client recv OK, data size: {unit_convert(len(MESSAGE))} bytes, recv time cost: {end - mid} s')
+    print(f'Total time cost: {end - start}')
     print('==========================')
-    assert bytes(data).decode() == MESSAGE
+
     # client.close()

@@ -6,7 +6,7 @@ from socketserver import ThreadingUDPServer
 
 lock = threading.Lock()
 
-loss_rate = 0.1
+loss_rate = 0.2
 corrupt_rate = 0.05
 buffer_size = 100000
 
