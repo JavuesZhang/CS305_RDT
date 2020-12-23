@@ -2,30 +2,53 @@
 
 import logging
 from rdt import RDTSocket, server_logger
-import time
+import time, threading
 
 SERVER_ADDR = '127.0.0.1'
 SERVER_PORT = 18888
 
-BUFFER_SIZE = 6144
+BUFFER_SIZE = 10240
 
 DATA_END = b'@'
+
+
+class Echo(threading.Thread):
+    def __init__(self, conn, address):
+        threading.Thread.__init__(self)
+        self.conn = conn
+        self.address = address
+
+    def run(self):
+        while True:
+            data = bytearray()
+            while True:
+                while len(data) < 152138:
+                    data.extend(self.conn.recv(BUFFER_SIZE))
+
+                # time.sleep(0.06)
+                # data = self.conn.recv(BUFFER_SIZE)
+                if len(data) != 0:
+                    self.conn.send(data)  # echo
+                else:
+                    time.sleep(0.1)
+
 
 if __name__ == '__main__':
     server = RDTSocket()
     server.bind((SERVER_ADDR, SERVER_PORT))
     try:
         while True:
-            conn, client = server.accept()
-            data = bytearray()
-            while True:
-                time.sleep(0.1)
-                data = conn.recv(BUFFER_SIZE)
-                if len(data) != 0:
-                    conn.send(data)  # echo
-                    print('\n\n\n\n\n\n\n\n\n\n\n')
-                else:
-                    time.sleep(0.1)
+            conn, client_addr = server.accept()
+            Echo(conn, client_addr).start()
+
+            # data = bytearray()
+            # while True:
+            #     time.sleep(0.1)
+            #     data = conn.recv(BUFFER_SIZE)
+            #     if len(data) != 0:
+            #         conn.send(data)  # echo
+            #     else:
+            #         time.sleep(0.1)
                 # while data[-1] != DATA_END:
                 #     time.sleep(0.1)
                 #     data.extend(conn.recv(BUFFER_SIZE))
@@ -34,6 +57,6 @@ if __name__ == '__main__':
                 #     conn.send(bytes(data))  # echo
                 #     print(f'server send OK, data size: {len(data)}')
                 # time.sleep(200)
-            conn.close()
+            # conn.close()
     except KeyboardInterrupt as k:
         print(k)

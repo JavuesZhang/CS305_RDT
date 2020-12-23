@@ -7,7 +7,7 @@ from rdt import RDTSocket, RDTSegment
 
 SERVER_ADDR = '127.0.0.1'
 SERVER_PORT = 18888
-BUFFER_SIZE = 6144
+BUFFER_SIZE = 10240
 
 
 def unit_convert(value):
@@ -22,7 +22,6 @@ def unit_convert(value):
 DATA_END = b'@'
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO, format='[CLIENT %(levelname)s] %(asctime)s: %(message)s')
     client = RDTSocket()
     client.connect((SERVER_ADDR, SERVER_PORT))
     alice = open('alice.txt', 'rb')
@@ -38,7 +37,7 @@ if __name__ == '__main__':
     time.sleep(1)
     data.extend(client.recv(BUFFER_SIZE))
     while len(data) != meg_len:
-        time.sleep(0.1)
+        time.sleep(0.08)
         data.extend(client.recv(BUFFER_SIZE))
     end = time.time()
     assert bytes(data) == MESSAGE

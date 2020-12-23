@@ -8,7 +8,9 @@ from queue import PriorityQueue
 
 #############################################################################
 # TODO:
-# 1. Determine the buff size of each socket, that is, the size of the queue
+# 1. timeout reset
+# 2. See you
+# 3.
 #############################################################################
 
 LOG_FORMAT = "[%(name)s %(levelname)s] %(filename)s[func: %(filename)s  line:%(lineno)d] %(asctime)s: %(message)s"
@@ -23,6 +25,7 @@ CONSTANT2P32 = 4294967296  # 2^32
 
 alpha = 0.125
 beta = 0.25
+
 
 class RDTSocket(UnreliableSocket):
     """
@@ -85,6 +88,7 @@ class RDTSocket(UnreliableSocket):
         self.main_pq = PriorityQueue()
         self.sub_pq = PriorityQueue()
         self.ack_set = set()
+        self.sub_ack_set = set()
 
         #############################################################################
         #                             END OF YOUR CODE                              #
@@ -122,7 +126,7 @@ class RDTSocket(UnreliableSocket):
                 continue
 
             if rdt_seg.syn:
-                seq_num = 0  # TODO: random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
+                seq_num = 4294950000  # TODO: random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
                 ack_num = rdt_seg.seq_num + 1
                 syn_ack_seg = RDTSegment(rdt_seg.dest_port, rdt_seg.src_port, seq_num, ack_num,
                                          ack=True, syn=True)
@@ -145,10 +149,12 @@ class RDTSocket(UnreliableSocket):
                 conn._recv_from = conn._server_recvfrom
                 conn._send_to = conn._server_sendto
 
+                if len(rdt_seg.payload) != 0:
+                    self.segment_buff.put((rdt_seg.encode(), addr), block=False)
                 server_logger.info(
                     f"Server [{self.local_addr}] accepts the connection from client [{addr}], start processing segment")
                 if len(rdt_seg.payload) != 0:
-                    self.seq_num_payload_buff.put((rdt_seg.seq_num, rdt_seg.payload))
+                    self.seq_num_payload_buff.put((rdt_seg.seq_num, rdt_seg.payload), block=False)
                 self.data_center.add_sock(addr, conn)
                 conn.recv_thread.start()
                 break
@@ -182,7 +188,7 @@ class RDTSocket(UnreliableSocket):
         client_logger.info(f"client [{self.local_addr}] initiate connection request to server [{address}].")
 
         # send syn pkt
-        self.local_seq_num = 0  # TODO: random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
+        self.local_seq_num = 4294950000  # TODO: random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
         self.local_ack_num = 0
         syn_seg = RDTSegment(self.local_addr[1], address[1], self.local_seq_num, self.local_ack_num, syn=True)
         self._send_to(syn_seg, address)
@@ -270,7 +276,7 @@ class RDTSocket(UnreliableSocket):
         send_base = 0
         # location at data
         next_seq = 0
-        send_window_len = self.mss
+        send_window_len = self.mss * 10
 
         # parameter for timeout_judge
         time_out = self.rtt_orign
@@ -309,12 +315,13 @@ class RDTSocket(UnreliableSocket):
             while True:
                 if send_base + send_window_len - next_seq >= self.mss and next_seq + self.mss <= len(data):
                     self.seq_num_payload_buff.put(
-                        ((seq_base + next_seq) % seq_size, data[next_seq: next_seq + self.mss]))
+                        ((seq_base + next_seq) % seq_size, data[next_seq: next_seq + self.mss]), block=False)
                     print(f'Please send segment, seq_num={seq_base + next_seq}')
                     next_seq += self.mss
                 elif send_base + send_window_len > len(data) > next_seq and next_seq + self.mss > len(data):
-                    self.seq_num_payload_buff.put(((seq_base + next_seq) % seq_size, data[next_seq:]))
-                    print(f'Please send segment, seq_num={seq_base + next_seq}, it is the last one, len={len(data) - next_seq}')
+                    self.seq_num_payload_buff.put(((seq_base + next_seq) % seq_size, data[next_seq:]), block=False)
+                    print(
+                        f'Please send segment, seq_num={seq_base + next_seq}, it is the last one, len={len(data) - next_seq}')
                     next_seq = len(data)
                 else:
                     break
@@ -322,16 +329,17 @@ class RDTSocket(UnreliableSocket):
             while True:
                 send_base_seq = (seq_base + send_base) % seq_size
                 if not self.ack_num_option_buff.empty():
-                    ack_tuple = self.ack_num_option_buff.get()
+                    ack_tuple = self.ack_num_option_buff.get(block=False)
                     print(ack_tuple)
                     ack_num = ack_tuple[0]
                     options = ack_tuple[1]
-                    if ack_num == seq_base + len(data):
-                        self.local_seq_num += len(data)
+                    if ack_num == (seq_base + len(data)) % RDTSegment.SEQ_NUM_BOUND or send_base == len(data):
+                        self.local_seq_num = (self.local_seq_num + len(data)) % RDTSegment.SEQ_NUM_BOUND
                         return
                     # move window
                     if ack_num > send_base_seq:
-                        print(f'move window!, send_base_from={send_base} send_base_to={send_base + (ack_num - send_base_seq)}')
+                        print(
+                            f'move window!, send_base_from={send_base} send_base_to={send_base + (ack_num - send_base_seq)}')
                         send_base += (ack_num - send_base_seq)
                         if ack_num - send_base_seq <= self.mss:
                             timeout_rst(time.time() - timer_start)
@@ -350,71 +358,36 @@ class RDTSocket(UnreliableSocket):
                         break
                     # acculate for fast retransmission
                     elif 5 in options:
-                        retr_range = options[5][0]
+
                         if fr_cnt < 3:
                             fr_cnt += 1
                         else:
-                            unACK_range[0] = send_base_seq
-                            unACK_range[1] = retr_range[1]
-                            fr_base = send_base
-                            if unACK_range[0] < unACK_range[1]:
+                            for unACK_range in options[5]:
+                                fr_base = send_base + unACK_range[0] - send_base_seq
                                 fr_len = unACK_range[1] - unACK_range[0]
-                            else:
-                                fr_len = unACK_range[1] - unACK_range[0] + seq_size
-                            fr_next = fr_base
-                            while True:
-                                print(
-                                    f'retransimission, seq_num={seq_base + fr_next} fr_base={fr_base} fr_len={fr_len} fr_next={fr_next} unack={unACK_range}')
-                                if fr_base + fr_len - fr_next >= self.mss:
-                                    self.seq_num_payload_buff.put(
-                                        ((seq_base + fr_next) % seq_size, data[fr_next: fr_next + self.mss]))
-                                    fr_next += self.mss
-                                elif fr_base + fr_len - len(data) == 0:
-                                    self.seq_num_payload_buff.put(((seq_base + fr_next) % seq_size, data[fr_next:]))
-                                    fr_next = len(data)
-                                else:
-                                    break
+                                if fr_len < 0:
+                                    fr_len += RDTSegment.SEQ_NUM_BOUND
+
+                                fr_next = fr_base
+                                while True:
+                                    print(
+                                        f'retransimission, seq_num={seq_base + fr_next} fr_base={fr_base} fr_len={fr_len} fr_next={fr_next} unack={unACK_range}')
+                                    if fr_base + fr_len - fr_next >= self.mss:
+                                        self.seq_num_payload_buff.put(
+                                            ((seq_base + fr_next) % seq_size, data[fr_next: fr_next + self.mss]),
+                                            block=False)
+                                        fr_next += self.mss
+                                    elif fr_base + fr_len - len(data) == 0:
+                                        self.seq_num_payload_buff.put(((seq_base + fr_next) % seq_size, data[fr_next:]),
+                                                                      block=False)
+                                        fr_next = len(data)
+                                    else:
+                                        break
                             fr_cnt = 0
                             congestionCtrl_state = 2
                             congestion_control_newAck(self.mss)
                             timer_start = time.time()
 
-
-                        # if fr_cnt == 0:
-                        #     unACK_range[0] = send_base_seq
-                        #     unACK_range[1] = retr_range[1]
-                        #     fr_cnt += 1
-                        # else:
-                        #     if (retr_range[1] < unACK_range[1] and unACK_range + seq_size + 1 >= retr_range[
-                        #         1] + send_window_len) or (
-                        #             retr_range[1] > unACK_range[1] and unACK_range + seq_size + 1 <= retr_range[
-                        #         1] + send_window_len):
-                        #         unACK_range[1] = retr_range[1]
-                        #     fr_cnt += 1
-                        #     # judge fast retransimission
-                        #     if fr_cnt == 3:
-                        #         fr_base = send_base
-                        #         if unACK_range[0] < unACK_range[1]:
-                        #             fr_len = unACK_range[1] - unACK_range[0]
-                        #         else:
-                        #             fr_len = unACK_range[1] - unACK_range[0] + seq_size
-                        #         fr_next = fr_base
-                        #         while True:
-                        #             print(
-                        #                 f'retransimission, seq_num={seq_base + fr_next} fr_base={fr_base} fr_len={fr_len} fr_next={fr_next}')
-                        #             if fr_base + fr_len - fr_next >= self.mss:
-                        #                 self.seq_num_payload_buff.put(
-                        #                     ((seq_base + fr_next) % seq_size, data[fr_next: fr_next + self.mss]))
-                        #                 fr_next += self.mss
-                        #             elif fr_next < len(data):
-                        #                 self.seq_num_payload_buff.put(((seq_base + fr_next) % seq_size, data[fr_next:]))
-                        #                 fr_next = len(data)
-                        #             else:
-                        #                 break
-                        #         fr_cnt = 0
-                        #         congestionCtrl_state = 2
-                        #         congestion_control_newAck(self.mss)
-                        #         timer_start = time.time()
                     # without operation
                     else:
                         continue
@@ -423,7 +396,7 @@ class RDTSocket(UnreliableSocket):
                     print(f'timeout, time_from_start:{time.time() - timer_start}, time_out:{time_out}')
                     buff = ((seq_base + send_base) % seq_size, data[send_base: min(send_base + self.mss, len(data))])
                     if buff not in self.seq_num_payload_buff.queue:
-                        self.seq_num_payload_buff.put(buff)
+                        self.seq_num_payload_buff.put(buff, block=False)
                     timer_start = time.time()
                     # send_window_len = 0
                     congestion_control_newAck(self.mss)
@@ -538,8 +511,8 @@ class RDTSocket(UnreliableSocket):
             timeout = 1000
         tout = time.time() + timeout
         while time.time() < tout:
-            if not self.segment_buff.empty():
-                seg, addr = self.segment_buff.get()
+            if self.segment_buff.qsize():
+                seg, addr = self.segment_buff.get(block=False)
                 server_logger.info(
                     f'Take out segment from  ({self.local_addr[0]}, {self.local_addr[1]}, {addr[0]}, {addr[1]})')
                 rdt_seg = RDTSegment.parse(seg)
@@ -598,16 +571,17 @@ class RDTSocket(UnreliableSocket):
         Receive and process the segment and add the processed data to the buff
         """
         tmp_counter = 0
+        need_option = False
         ack_seg = RDTSegment(self.local_addr[1], self.peer_addr[1], 0, self.local_ack_num)
         while True:
-            rdt_seg, addr = self._recv_from(0.09)
+            rdt_seg, addr = self._recv_from(0.1)
             if rdt_seg is None:
                 if not self.seq_num_payload_buff.empty():
                     # need send data which come from func send()
                     seg_cnt = self.seq_num_payload_buff.qsize()
                     print(f'No segment can be received, but need to send segment, send segments count: {seg_cnt}')
                     for i in range(seg_cnt):
-                        seq_payload = self.seq_num_payload_buff.get_nowait()
+                        seq_payload = self.seq_num_payload_buff.get(block=False)
                         seq_seg = RDTSegment(self.local_addr[1], self.peer_addr[1], seq_payload[0], self.local_ack_num,
                                              payload=seq_payload[1])
                         self._send_to(seq_seg, self.peer_addr)
@@ -622,7 +596,7 @@ class RDTSocket(UnreliableSocket):
             if rdt_seg.ack:
                 if rdt_seg.options:
                     print(f'sender need retransmission op={rdt_seg.options}')
-                self.ack_num_option_buff.put((rdt_seg.ack_num, rdt_seg.options))
+                self.ack_num_option_buff.put((rdt_seg.ack_num, rdt_seg.options), block=False)
 
             data_len = len(rdt_seg.payload)
             if data_len != 0:
@@ -637,9 +611,7 @@ class RDTSocket(UnreliableSocket):
                         self.main_pq.put(AckRange(ack_range_tuple, rdt_seg.payload))
                         self.ack_set.add(ack_range_tuple)
 
-                    min_ack_range = self.main_pq.queue[0]
-                    ack_seg.ack_num = self.local_ack_num
-                    ack_seg.options[5] = [(self.local_ack_num, min_ack_range.value[0])]
+                    need_option = True
                 elif self.local_ack_num == rdt_seg.seq_num:
                     # seq_num equal recv window base
                     print(
@@ -655,6 +627,8 @@ class RDTSocket(UnreliableSocket):
                             print('window rollback successfully')
                             self.main_pq.queue = self.sub_pq.queue
                             self.sub_pq.queue = []
+                            self.ack_set = self.sub_ack_set
+                            self.sub_ack_set = set()
                             continue
                         min_ack_range = self.main_pq.queue[0]
                         if self.local_ack_num == min_ack_range.value[0]:
@@ -666,10 +640,7 @@ class RDTSocket(UnreliableSocket):
                             continue
                         else:
                             # construct an option sack
-                            ack_seg.ack_num = self.local_ack_num
-                            ack_seg.options[5] = [(self.local_ack_num, min_ack_range.value[0])]
-                            print(
-                                f'receiver call sender need retransmission, local_ack_num={self.local_ack_num} op={rdt_seg.options}')
+                            need_option = True
                             break
                 elif self.local_ack_num - self.recv_win_size < rdt_seg.seq_num < self.local_ack_num:
                     # seq_num in left of window within one win_size
@@ -678,10 +649,50 @@ class RDTSocket(UnreliableSocket):
                 elif rdt_seg.seq_num < self.local_ack_num + self.recv_win_size - RDTSegment.SEQ_NUM_BOUND:
                     # window rollback
                     print('recv seg, window rollback')
-                    self.sub_pq.put(AckRange(ack_range_tuple, rdt_seg.payload))
+                    if not ack_range_tuple in self.sub_ack_set:
+                        self.sub_pq.put(AckRange(ack_range_tuple, rdt_seg.payload))
+                        self.sub_ack_set.add(ack_range_tuple)
                 else:
                     print('recv seg, Alien segment')
                     ack_seg.ack = False
+                    ack_seg.options = {}
+
+                if need_option:
+                    range_back_list = []
+                    cnt = 1
+                    new_op_5 = [(self.local_ack_num, self.main_pq.queue[0].value[0])]
+
+                    while cnt < 5 and self.main_pq.qsize() > 1:
+                        tmp = self.main_pq.get()
+                        tmp_range = tmp.value
+                        new_range = list(tmp_range)
+                        new_data = bytearray(tmp.data)
+
+                        while self.main_pq.qsize() > 0:
+                            top_range = self.main_pq.queue[0].value
+                            if top_range[0] == tmp_range[1]:
+                                new_range[1] = top_range[1]
+                                tmp = self.main_pq.get()
+                                new_data.extend(tmp.data)
+                            else:
+                                break
+                        range_back_list.append(AckRange(tuple(new_range), bytes(new_data)))
+
+                        if self.main_pq.qsize():
+                            new_op_5.append((new_range[1], self.main_pq.queue[0].value[0]))
+                            cnt += 1
+
+                    for i in range_back_list:
+                        self.main_pq.put(i)
+                        self.ack_set.add(i.value)
+
+                    ack_seg.ack_num = self.local_ack_num
+                    ack_seg.options[5] = new_op_5
+                    need_option = False
+
+                    print(
+                        f'receiver call sender need retransmission, local_ack_num={self.local_ack_num} op={ack_seg.options}')
+                else:
                     ack_seg.options = {}
             else:
                 ack_seg.ack = False
@@ -691,7 +702,7 @@ class RDTSocket(UnreliableSocket):
                 pass
             if not self.seq_num_payload_buff.empty():
                 # need send data which come from func send()
-                seq_payload = self.seq_num_payload_buff.get()
+                seq_payload = self.seq_num_payload_buff.get(block=False)
                 ack_seg.seq_num = seq_payload[0]
                 ack_seg.payload = seq_payload[1]
             else:
@@ -760,11 +771,11 @@ class DataCenter(threading.Thread):
             if data:
                 if addr in self.socket_table:
                     sock = self.socket_table.get(addr)
-                    sock.segment_buff.put((data, addr))
+                    sock.segment_buff.put((data, addr), block=False)
                     server_logger.info(
                         f'Data distribution to ({sock.local_addr[0]}, {sock.local_addr[1]}, {addr[0]}, {addr[1]})')
                 elif self.data_entrance.allow_accept:
-                    self.data_entrance.segment_buff.put((data, addr))
+                    self.data_entrance.segment_buff.put((data, addr), block=False)
 
     def pause(self) -> None:
         """
@@ -904,7 +915,7 @@ class RDTSegment:
         #   [header length]        unit           size
         #     in segment           Word   (flags & 0xFF) >> 4
         #  in RDTSegment class     Byte   (flags & 0xFF) >> 2
-        self.header_len = (flags & 0xFF) >> 2
+        self.header_len = (flags & 0xF0) >> 2
 
     def _encode_flags(self) -> int:
         flags = 0
