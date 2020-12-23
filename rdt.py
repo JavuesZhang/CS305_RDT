@@ -337,7 +337,7 @@ class RDTSocket(UnreliableSocket):
                         timer_start = time.time()
                         congestion_control_newAck(ack_num - send_base_seq)
                         fr_cnt = 0
-                        continue
+                        break
                     elif ack_num < send_base_seq and send_base_seq + send_window_len >= seq_size + ack_num:
                         print(
                             f'move window rollback!, send_base_from={send_base} send_base_to={send_base + (seq_size + ack_num - send_base_seq)}')
@@ -346,7 +346,7 @@ class RDTSocket(UnreliableSocket):
                             timeout_rst(time.time() - timer_start)
                         congestion_control_newAck(seq_size + ack_num - send_base_seq)
                         fr_cnt = 0
-                        continue
+                        break
                     # acculate for fast retransmission
                     elif 5 in options:
                         retr_range = options[5][0]
@@ -424,7 +424,7 @@ class RDTSocket(UnreliableSocket):
                     if buff not in self.seq_num_payload_buff.queue:
                         self.seq_num_payload_buff.put(buff)
                     timer_start = time.time()
-                    send_window_len = 0
+                    # send_window_len = 0
                     congestion_control_newAck(self.mss)
 
         #############################################################################
