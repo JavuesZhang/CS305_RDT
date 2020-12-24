@@ -22,7 +22,7 @@ def unit_convert(value):
 DATA_END = b'@'
 
 if __name__ == '__main__':
-    client = RDTSocket()
+    client = RDTSocket(debug=False)
     client.connect((SERVER_ADDR, SERVER_PORT))
     alice = open('alice.txt', 'rb')
     MESSAGE = alice.read()
@@ -47,4 +47,4 @@ if __name__ == '__main__':
     print(f'Total time cost: {end - start}')
     print('==========================')
 
-    # client.close()
+    client.close()

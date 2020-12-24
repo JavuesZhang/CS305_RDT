@@ -77,7 +77,7 @@ class RDTSocket(UnreliableSocket):
         # socket
         self.busy = False
         self.local_addr = ('0.0.0.0', 0)
-        self.peer_addr = ('255.255.255.255', 0)
+        self.peer_addr = ('255.255.255.255', 65538)
         self.ack_num_option_buff = queue.Queue()
         self.seq_num_payload_buff = queue.Queue()
         self.recv_thread = ProcessingSegment(self)
@@ -91,6 +91,10 @@ class RDTSocket(UnreliableSocket):
         self.sub_pq = PriorityQueue()
         self.ack_set = set()
         self.sub_ack_set = set()
+
+        if not debug:
+            server_logger.setLevel(logging.WARNING)
+            client_logger.setLevel(logging.WARNING)
 
         #############################################################################
         #                             END OF YOUR CODE                              #
@@ -109,6 +113,8 @@ class RDTSocket(UnreliableSocket):
         #############################################################################
         # TODO: YOUR CODE HERE                                                      #
         #############################################################################
+        assert not self.local_closed, "socket already closed, could not use again."
+
         if self.conn_cnt == -1:
             self.listen(30)
 
@@ -180,6 +186,8 @@ class RDTSocket(UnreliableSocket):
         # TODO: YOUR CODE HERE                                                      #
         #############################################################################
 
+        assert not self.local_closed, "socket already closed, could not use again."
+
         try:  # If there is no binding address, randomly bind one
             self.local_addr = super(RDTSocket, self).getsockname()
         except OSError:
@@ -241,7 +249,7 @@ class RDTSocket(UnreliableSocket):
         In other words, if someone else sends data to you from another address,
         it MUST NOT affect the data returned by this function.
         """
-        assert self._recv_from, "Connection not established yet. Use recvfrom instead."
+        assert not self.local_closed, "socket already closed, could not use again."
         #############################################################################
         # TODO: YOUR CODE HERE                                                      #
         #############################################################################
@@ -268,7 +276,7 @@ class RDTSocket(UnreliableSocket):
         Send data to the socket.
         The socket must be connected to a remote socket, i.e. self._send_to must not be none.
         """
-        assert self._send_to, "Connection not established yet. Use sendto instead."
+        assert not self.local_closed, "socket already closed, could not use again."
         #############################################################################
         # TODO: YOUR CODE HERE                                                      #
         #############################################################################
@@ -322,12 +330,14 @@ class RDTSocket(UnreliableSocket):
             timer_start = time.time()
             while True:
                 if send_base + send_window_len - next_seq >= self.mss and next_seq + self.mss <= data_len:
+                    self.local_seq_num = (seq_base + next_seq) % seq_size
                     self.seq_num_payload_buff.put(
-                        ((seq_base + next_seq) % seq_size, data[next_seq: next_seq + self.mss]), block=False)
+                        (self.local_seq_num, data[next_seq: next_seq + self.mss]), block=False)
                     print(f'Please send segment, seq_num={seq_base + next_seq}')
                     next_seq += self.mss
                 elif send_base + send_window_len > data_len > next_seq and next_seq + self.mss > data_len:
-                    self.seq_num_payload_buff.put(((seq_base + next_seq) % seq_size, data[next_seq:]), block=False)
+                    self.local_seq_num = (seq_base + next_seq) % seq_size
+                    self.seq_num_payload_buff.put((self.local_seq_num, data[next_seq:]), block=False)
                     print(
                         f'Please send segment, seq_num={seq_base + next_seq}, it is the last one, len={data_len - next_seq}')
                     next_seq = data_len
@@ -335,25 +345,25 @@ class RDTSocket(UnreliableSocket):
                     break
             # receive ack
             while True:
+                if send_base == data_len:
+                    self.local_seq_num = (seq_base + next_seq) % RDTSegment.SEQ_NUM_BOUND
+                    print('All data sent.')
+                    return
                 send_base_seq = (seq_base + send_base) % seq_size
                 if not self.ack_num_option_buff.empty():
                     ack_tuple = self.ack_num_option_buff.get(block=False)
                     print(ack_tuple)
                     ack_num = ack_tuple[0]
                     options = ack_tuple[1]
-                    if ack_num == (seq_base + data_len) % RDTSegment.SEQ_NUM_BOUND:
-                        self.local_seq_num = (self.local_seq_num + data_len) % RDTSegment.SEQ_NUM_BOUND
-                        print('return')
-                        return
+
                     # move window
                     if ack_num > send_base_seq:
                         print(
                             f'move window!, send_base_from={send_base} send_base_to={send_base + (ack_num - send_base_seq)} ack_num={ack_num} send_base_seq={send_base_seq}')
                         send_base += (ack_num - send_base_seq)
-                        if ack_num - send_base_seq <= self.mss:
-                            timeout_rst(time.time() - timer_start)
-                        # timeout_rst(time.time() - timer_start)
-                        timer_start = time.time()
+                        # if ack_num - send_base_seq <= self.mss:
+                        #     timeout_rst(time.time() - timer_start)
+                        timeout_rst(time.time() - timer_start)
                         congestion_control_newAck(ack_num - send_base_seq)
                         fr_cnt = 0
                         break
@@ -361,16 +371,15 @@ class RDTSocket(UnreliableSocket):
                         print(
                             f'move window rollback!, send_base_from={send_base} send_base_to={send_base + (seq_size + ack_num - send_base_seq)} ack_num={ack_num} send_base_seq={send_base_seq}')
                         send_base += (seq_size + ack_num - send_base_seq)
-                        if seq_size + ack_num - send_base_seq <= self.mss:
-                            timeout_rst(time.time() - timer_start)
-                        # timeout_rst(time.time() - timer_start)
-                        timer_start = time.time()
+                        # if seq_size + ack_num - send_base_seq <= self.mss:
+                        #     timeout_rst(time.time() - timer_start)
+                        timeout_rst(time.time() - timer_start)
                         congestion_control_newAck(seq_size + ack_num - send_base_seq)
                         fr_cnt = 0
                         break
                     # acculate for fast retransmission
                     elif 5 in options:
-
+                        timeout_rst(time.time() - timer_start)
                         if fr_cnt < 3:
                             fr_cnt += 1
                         else:
@@ -379,7 +388,6 @@ class RDTSocket(UnreliableSocket):
                                 fr_len = unACK_range[1] - unACK_range[0]
                                 if fr_len < 0:
                                     fr_len += RDTSegment.SEQ_NUM_BOUND
-
                                 fr_next = fr_base
                                 while True:
                                     print(
@@ -402,6 +410,7 @@ class RDTSocket(UnreliableSocket):
 
                     # without operation
                     else:
+                        timeout_rst(time.time() - timer_start)
                         continue
                 # judge time out
                 if time.time() - timer_start > time_out:
@@ -422,78 +431,82 @@ class RDTSocket(UnreliableSocket):
         Finish the connection and release resources. For simplicity, assume that
         after a socket is closed, neither futher sends nor receives are allowed.
         """
+        assert self.peer_addr != ('255.255.255.255', 65538), "Connection not established."
+        assert not self.local_closed, "socket already closed, could not use again."
         #############################################################################
         # TODO: YOUR CODE HERE                                                      #
         #############################################################################
-        if self.local_closed or self._send_to is None:
+        if self.local_closed:
             return
-
         self.local_closing = True
-        if self.is_master_server:
+        while self.busy:
+            # wait sub recv thread stop
+            print('wait sub recv thread stop')
+            time.sleep(1)
             pass
-        elif self.is_server:
 
-            self.data_center.rvm_sock(self.peer_addr)
-
-            master_sock = self.data_center.data_entrance
-
-            if master_sock.local_closed and master_sock.conn_cnt == 0:
-                self.data_center.stop()
-        else:
-            client_logger.info(
-                f"client [{self.local_addr[0]}] attempts to close the connection with server [{self.peer_addr}]")
-
-            fin_seg = RDTSegment(self.local_addr[1], self.peer_addr[1], self.local_seq_num, self.local_ack_num,
-                                 fin=True)
-            ack_seg = RDTSegment(self.local_addr[1], self.peer_addr[1], self.local_seq_num,
-                                 0, ack=True)
-            self.settimeout(0.1)
-            while True:
-                if not self.peer_closing and not self.peer_closed:
-                    self._send_to(fin_seg, self.peer_addr)
-                elif self.peer_closed:
-                    try:
-                        peer_seg, addr = self._recv_from()
-                        if peer_seg.fin:
-                            ack_seg = RDTSegment(self.local_addr[1], self.peer_addr[1], self.local_seq_num,
-                                                 peer_seg.seq_num + 1, ack=True)
-                            self._send_to(ack_seg, self.peer_addr)
-                        else:
-                            break
-                    except OSError:
-                        break
-                    continue
-                else:
-                    self._send_to(ack_seg, self.peer_addr)
-
-                try:
-                    peer_seg, addr = self._recv_from()
-                except OSError:
-                    continue
-
-                if peer_seg.ack and peer_seg.ack_num == self.local_seq_num + 1:
-                    self.peer_closing = True
-                elif peer_seg.fin:
-                    ack_seg = RDTSegment(self.local_addr[1], self.peer_addr[1], self.local_seq_num,
-                                         peer_seg.seq_num + 1, ack=True)
-                    self._send_to(ack_seg, self.peer_addr)
-                    self.peer_closed = True
-                    # break
-
-            self._send_to = None
-            self.local_closed = True
-            client_logger.info(
-                f"client [{self.local_addr}] successfully closed the connection with server [{self.peer_addr}]")
-
+        self._close_local()
+        self._close_peer()
+        self._close_resrc()
         #############################################################################
         #                             END OF YOUR CODE                              #
         #############################################################################
         super().close()
 
+    def _close_peer(self):
+        ack_seg = RDTSegment(self.local_addr[1], self.peer_addr[1], self.local_seq_num,
+                             self.local_ack_num, ack=True, fin=True)
+        tout = 0
+        while True:
+            rdt_seg, addr = self._recv_from(0.1)
+            # peer close
+            if rdt_seg and rdt_seg.fin and not rdt_seg.ack:
+                self.peer_closing = True
+                ack_seg.ack_num = rdt_seg.seq_num + 1
+                self._send_to(ack_seg, self.peer_addr)
+                tout = time.time() + 2
+                print('reset wait my ack time out')
+
+            if self.peer_closing and time.time() > tout:
+                self.peer_closed = True
+                break
+        print('peer closed~~')
+
+    def _close_local(self):
+        seq_num = random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
+        fin_seg = RDTSegment(self.local_addr[1], self.peer_addr[1], seq_num, self.local_ack_num,
+                             fin=True)
+        while True:
+            rdt_seg, addr = self._recv_from(0.1)
+
+            # local close
+            if self.local_closing:
+                self._send_to(fin_seg, self.peer_addr)
+
+            if rdt_seg and rdt_seg.ack and rdt_seg.ack_num == seq_num + 1:
+                self.local_closing = False
+                self.local_closed = True
+                break
+        print('local closed~~')
+
+    def _close_resrc(self):
+        if self.is_server:
+            self.data_center.rvm_sock(self.peer_addr)
+            master_sock = self.data_center.data_entrance
+            if master_sock.local_closed and master_sock.conn_cnt == 0:
+                self.data_center.stop()
+        elif self.is_master_server:
+            pass
+        else:
+            client_logger.info(
+                f"client [{self.local_addr}] successfully closed the connection with server [{self.peer_addr}]")
+
     def bind(self, address) -> None:
+        assert not self.local_closed, "socket already closed, could not use again."
         super(RDTSocket, self).bind(address)
 
     def listen(self, max_conn: int = 10):
+        assert not self.local_closed, "socket already closed, could not use again."
         if self.conn_cnt == -1:
             self.max_conn = max_conn
             self.conn_cnt = 0
@@ -511,6 +524,7 @@ class RDTSocket(UnreliableSocket):
             self.max_conn = max_conn
 
     def getsockname(self) -> (str, int):
+        assert not self.local_closed, "socket already closed, could not use again."
         return self.local_addr
 
     def _server_recvfrom(self, timeout: float = None) -> ('RDTSegment', tuple):
@@ -603,6 +617,17 @@ class RDTSocket(UnreliableSocket):
                     else:
                         print('No segment can be received, also not need to send segment')
                         tmp_counter = 0
+
+                if not self.seq_num_payload_buff.qsize():
+                    if self.peer_closed and not self.local_closed:
+                        print('Passive close connection')
+                        self.local_closing = True
+                        self._close_local()
+                        self._close_resrc()
+                        return
+                    elif self.local_closing:
+                        print('Proactive request to close connection')
+                        return
                 continue
 
             if rdt_seg.ack:
@@ -710,9 +735,10 @@ class RDTSocket(UnreliableSocket):
                 ack_seg.ack = False
                 ack_seg.options = {}
 
-            if rdt_seg.fin:
-                pass
-            if not self.seq_num_payload_buff.empty():
+            if rdt_seg.fin and not rdt_seg.ack:
+                self._close_peer()
+
+            if self.seq_num_payload_buff.qsize():
                 # need send data which come from func send()
                 seq_payload = self.seq_num_payload_buff.get(block=False)
                 ack_seg.seq_num = seq_payload[0]
@@ -722,7 +748,16 @@ class RDTSocket(UnreliableSocket):
                 ack_seg.payload = b''
 
             if ack_seg.ack or len(ack_seg.payload) != 0:
+                print('I am busy~~~')
                 self._send_to(ack_seg, addr)
+            # elif self.peer_closed and not self.local_closed:
+            #     print('Passive close connection')
+            #     self._close_local()
+            #     self._close_resrc()
+            #     return
+            # elif self.local_closing:
+            #     print('Proactive request to close connection')
+            #     return
 
 
 """
@@ -1046,8 +1081,8 @@ class RDTSegment:
         if 5 in self.options:
             opts = self.options[5]
             for i in range(len(opts)):
-                op.append(((opts[i][0]+bound-ack_offset)%bound, (opts[i][1]+bound-ack_offset)%bound))
-        return f'{self.src_port} -> {self.dest_port} {self.flag_str()}Seq={(self.seq_num+bound-seq_offset)%bound} Ack={(self.ack_num+bound-ack_offset)%bound} ' \
+                op.append(((opts[i][0] + bound - ack_offset) % bound, (opts[i][1] + bound - ack_offset) % bound))
+        return f'{self.src_port} -> {self.dest_port} {self.flag_str()}Seq={(self.seq_num + bound - seq_offset) % bound} Ack={(self.ack_num + bound - ack_offset) % bound} ' \
                f'Win={self.recv_win} Len={len(self.payload)} Op={op}'
 
     def log_raw_info(self) -> str:
