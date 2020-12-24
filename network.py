@@ -7,7 +7,7 @@ from socketserver import ThreadingUDPServer
 lock = threading.Lock()
 
 loss_rate = 0.1
-corrupt_rate = 0.05
+corrupt_rate = 0.0001
 buffer_size = 100000
 
 def bytes_to_addr(bytes):
@@ -60,13 +60,29 @@ class Server(ThreadingUDPServer):
 
             if random.random() < loss_rate:
                 drop = rdt.RDTSegment.parse(data[8:])
-                print(client_address, bytes_to_addr(data[:8]), f" packet loss, {drop.log_info()}")
+                print(client_address, bytes_to_addr(data[:8]), f" packet loss, {drop.log_raw_info()}")
+                # print(client_address, bytes_to_addr(data[:8]), f" packet loss")
                 return
-            # data = bytearray(data)
-            # for i in range(0, random.randint(0, 3)):
-            #     pos = random.randint(0, len(data) - 1)
-            #     data[pos] = random.randint(0, 255)
-            # data = bytes(data)
+
+            # if random.random() < corrupt_rate:
+            #     data = bytearray(data)
+            #     for i in range(0, random.randint(0, 3)):
+            #         pos = random.randint(0, len(data) - 1)
+            #         data[pos] = random.randint(0, 255)
+            #     data = bytes(data)
+            #     corrupt = rdt.RDTSegment.parse(data[8:])
+            #     print(client_address, bytes_to_addr(data[:8]), f" packet corrupt, {corrupt.log_info()}")
+
+            corrupt = rdt.RDTSegment.parse(data[8:])
+            data = bytearray(data)
+            is_corrupted = False
+            for i in range(8, len(data)):
+                if random.random() > 0.9999200027999444:
+                    is_corrupted = True
+                    data[i] = data[i] ^ random.randint(0, 255)
+            if is_corrupted:
+                print(client_address, bytes_to_addr(data[:8]), f" corrupt pkt, {corrupt.log_raw_info()}")
+            data = bytes(data)
         """
         this part is not blocking and is executed by multiple threads in parallel
         you can add random delay here, this would change the order of arrival at the receiver side.

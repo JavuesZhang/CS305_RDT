@@ -19,18 +19,16 @@ class Echo(threading.Thread):
         self.address = address
 
     def run(self):
-        while True:
-            data = bytearray()
-            while True:
-                while len(data) < 152138:
-                    data.extend(self.conn.recv(BUFFER_SIZE))
+        data = bytearray()
 
-                # time.sleep(0.06)
-                # data = self.conn.recv(BUFFER_SIZE)
-                if len(data) != 0:
-                    self.conn.send(data)  # echo
-                else:
-                    time.sleep(0.1)
+        while True:
+            while len(data) < 152138:
+                data.extend(self.conn.recv(BUFFER_SIZE))
+            if len(data) != 0:
+                self.conn.send(data)  # echo
+                data = bytearray()
+            else:
+                time.sleep(0.1)
 
 
 if __name__ == '__main__':
