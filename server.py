@@ -35,9 +35,7 @@ class Echo(threading.Thread):
             else:
                 time.sleep(0.1)
         print('closed')
-
-
-if __name__ == '__main__':
+def test00():
     server = RDTSocket()
     server.bind((SERVER_ADDR, SERVER_PORT))
     try:
@@ -53,14 +51,36 @@ if __name__ == '__main__':
             #         conn.send(data)  # echo
             #     else:
             #         time.sleep(0.1)
-                # while data[-1] != DATA_END:
-                #     time.sleep(0.1)
-                #     data.extend(conn.recv(BUFFER_SIZE))
-                # print(f'server recv OK, data size: {len(data)}')
-                # if data:
-                #     conn.send(bytes(data))  # echo
-                #     print(f'server send OK, data size: {len(data)}')
-                # time.sleep(200)
+            # while data[-1] != DATA_END:
+            #     time.sleep(0.1)
+            #     data.extend(conn.recv(BUFFER_SIZE))
+            # print(f'server recv OK, data size: {len(data)}')
+            # if data:
+            #     conn.send(bytes(data))  # echo
+            #     print(f'server send OK, data size: {len(data)}')
+            # time.sleep(200)
             # conn.close()
     except KeyboardInterrupt as k:
         print(k)
+
+def test01():
+    server = RDTSocket()
+    server.bind(('127.0.0.1', 9999))
+
+    while True:
+        conn, client_addr = server.accept()
+        start = time.perf_counter()
+        while True:
+            data = conn.recv(2048)
+            if data:
+                conn.send(data)
+            else:
+                break
+        '''
+        make sure the following is reachable
+        '''
+        conn.close()
+        print(f'connection finished in {time.perf_counter()-start}s')
+
+if __name__ == '__main__':
+    test01()

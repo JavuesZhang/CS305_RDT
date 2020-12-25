@@ -9,8 +9,7 @@ from queue import PriorityQueue
 #############################################################################
 # TODO:
 # 1. timeout reset
-# 2. See you
-# 3.
+# 2. option
 #############################################################################
 
 LOG_FORMAT = "[%(name)s %(levelname)s] %(filename)s[func: %(filename)s  line:%(lineno)d] %(asctime)s: %(message)s"
@@ -99,6 +98,34 @@ class RDTSocket(UnreliableSocket):
         #############################################################################
         #                             END OF YOUR CODE                              #
         #############################################################################
+
+    def bind(self, address) -> None:
+        assert not self.local_closed, "socket already closed, could not use again."
+        super(RDTSocket, self).bind(address)
+
+
+    def getsockname(self) -> (str, int):
+        assert not self.local_closed, "socket already closed, could not use again."
+        return self.local_addr
+
+    def listen(self, max_conn: int = 10):
+        assert not self.local_closed, "socket already closed, could not use again."
+        if self.conn_cnt == -1:
+            self.max_conn = max_conn
+            self.conn_cnt = 0
+            self.is_master_server = True
+            self._recv_from = self._server_recvfrom
+            self._send_to = self._server_sendto
+            try:
+                self.local_addr = super(RDTSocket, self).getsockname()
+            except OSError:
+                self.bind(('127.0.0.1', 0))
+                self.local_addr = super(RDTSocket, self).getsockname()
+            self.data_center = DataCenter(self)
+            self.data_center.start()
+        else:
+            self.max_conn = max_conn
+
 
     def accept(self) -> ('RDTSocket', (str, int)):
         """
@@ -249,6 +276,7 @@ class RDTSocket(UnreliableSocket):
         In other words, if someone else sends data to you from another address,
         it MUST NOT affect the data returned by this function.
         """
+        assert self.peer_addr != ('255.255.255.255', 65538), "Connection not established."
         assert not self.local_closed, "socket already closed, could not use again."
         #############################################################################
         # TODO: YOUR CODE HERE                                                      #
@@ -256,7 +284,8 @@ class RDTSocket(UnreliableSocket):
         timeout_sec = self.gettimeout()
         if timeout_sec is None:
             while len(self.data_buff) == 0:
-                pass
+                if self.local_closing or self.peer_closed:
+                    break
         else:
             tout = time.time() + timeout_sec
             while len(self.data_buff) == 0 and time.time() < tout:
@@ -276,6 +305,7 @@ class RDTSocket(UnreliableSocket):
         Send data to the socket.
         The socket must be connected to a remote socket, i.e. self._send_to must not be none.
         """
+        assert self.peer_addr != ('255.255.255.255', 65538), "Connection not established."
         assert not self.local_closed, "socket already closed, could not use again."
         #############################################################################
         # TODO: YOUR CODE HERE                                                      #
@@ -432,7 +462,7 @@ class RDTSocket(UnreliableSocket):
         after a socket is closed, neither futher sends nor receives are allowed.
         """
         assert self.peer_addr != ('255.255.255.255', 65538), "Connection not established."
-        assert not self.local_closed, "socket already closed, could not use again."
+        # assert not self.local_closed, "socket already closed, could not use again."
         #############################################################################
         # TODO: YOUR CODE HERE                                                      #
         #############################################################################
@@ -446,8 +476,10 @@ class RDTSocket(UnreliableSocket):
             pass
 
         self._close_local()
-        self._close_peer()
+        if not self.peer_closed:
+            self._close_peer()
         self._close_resrc()
+        print('peer and local both closed')
         #############################################################################
         #                             END OF YOUR CODE                              #
         #############################################################################
@@ -501,31 +533,6 @@ class RDTSocket(UnreliableSocket):
             client_logger.info(
                 f"client [{self.local_addr}] successfully closed the connection with server [{self.peer_addr}]")
 
-    def bind(self, address) -> None:
-        assert not self.local_closed, "socket already closed, could not use again."
-        super(RDTSocket, self).bind(address)
-
-    def listen(self, max_conn: int = 10):
-        assert not self.local_closed, "socket already closed, could not use again."
-        if self.conn_cnt == -1:
-            self.max_conn = max_conn
-            self.conn_cnt = 0
-            self.is_master_server = True
-            self._recv_from = self._server_recvfrom
-            self._send_to = self._server_sendto
-            try:
-                self.local_addr = super(RDTSocket, self).getsockname()
-            except OSError:
-                self.bind(('127.0.0.1', 0))
-                self.local_addr = super(RDTSocket, self).getsockname()
-            self.data_center = DataCenter(self)
-            self.data_center.start()
-        else:
-            self.max_conn = max_conn
-
-    def getsockname(self) -> (str, int):
-        assert not self.local_closed, "socket already closed, could not use again."
-        return self.local_addr
 
     def _server_recvfrom(self, timeout: float = None) -> ('RDTSegment', tuple):
         """
@@ -619,15 +626,18 @@ class RDTSocket(UnreliableSocket):
                         tmp_counter = 0
 
                 if not self.seq_num_payload_buff.qsize():
-                    if self.peer_closed and not self.local_closed:
-                        print('Passive close connection')
-                        self.local_closing = True
-                        self._close_local()
-                        self._close_resrc()
-                        return
-                    elif self.local_closing:
+                    if self.local_closing or self.peer_closed:
                         print('Proactive request to close connection')
                         return
+                    # if self.peer_closed and not self.local_closed:
+                    #     print('Passive close connection')
+                    #     self.local_closing = True
+                    #     self._close_local()
+                    #     self._close_resrc()
+                    #     return
+                    # elif self.local_closing:
+                    #     print('Proactive request to close connection')
+                    #     return
                 continue
 
             if rdt_seg.ack:
