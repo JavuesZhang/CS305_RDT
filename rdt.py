@@ -382,7 +382,6 @@ class RDTSocket(UnreliableSocket):
             client_logger.info(
                 f"client [{self._local_addr}] successfully closed the connection with server [{self._peer_addr}]")
 
-
     def _server_recvfrom(self, timeout_sec: float = None) -> ('RDTSegment', tuple):
         """
         Get RDTSegment from segment buffer, Provided to the server or master server for use
@@ -459,6 +458,7 @@ class RDTSocket(UnreliableSocket):
             time.sleep(0.1)
             need_send = True
             timer_start = None
+            timeout_timer = None
             timer_flag = False
             congestionCtrl_state = 0
             threash = CONSTANT2P32
@@ -527,6 +527,16 @@ class RDTSocket(UnreliableSocket):
                         #     timer_start = time.time()
                     else:
                         break
+
+                if self._seq_num_payload_buff.qsize()==0 and self._ack_num_option_buff.qsize() == 0 and send_base != data_len:
+                    if timeout_timer is None:
+                        timeout_timer = time.time()
+                    elif time.time() - timeout_timer > time_out:
+                        timer_flag = True
+                        timeout_timer = None
+                else:
+                    timeout_timer = None
+
                 # receive ack
                 while self._ack_num_option_buff.qsize():
                     send_base_seq = (seq_base + send_base) % seq_size
@@ -623,9 +633,9 @@ class RDTSocket(UnreliableSocket):
         while True:
             rdt_seg, addr = self._recv_from(0.1)
             if rdt_seg is None:
-                if not self._seq_num_payload_buff.empty():
+                seg_cnt = self._seq_num_payload_buff.qsize()
+                if seg_cnt != 0:
                     # need send data which come from func send()
-                    seg_cnt = self._seq_num_payload_buff.qsize()
                     print(f'No segment can be received, but need to send segment, send segments count: {seg_cnt}')
                     for i in range(seg_cnt):
                         seq_payload = self._seq_num_payload_buff.get(block=False)
@@ -701,7 +711,7 @@ class RDTSocket(UnreliableSocket):
                 elif rdt_seg.seq_num < self._local_ack_num + self._recv_win_size - RDTSegment.SEQ_NUM_BOUND:
                     # window rollback
                     print('recv seg, window rollback')
-                    if not ack_range_tuple in self._sub_ack_set:
+                    if ack_range_tuple not in self._sub_ack_set:
                         self._sub_pq.put(AckRange(ack_range_tuple, rdt_seg.payload))
                         self._sub_ack_set.add(ack_range_tuple)
                 else:
@@ -794,7 +804,7 @@ class AckRange:
 
 
 class DataCenter(threading.Thread):
-    def __init__(self, data_entrance: RDTSocket):
+    def __init__(self, data_entrance: 'RDTSocket'):
         threading.Thread.__init__(self)
         self.__flag = threading.Event()  # The identity used to pause the thread
         self.__flag.set()  # Initialization does not block threads
@@ -803,7 +813,7 @@ class DataCenter(threading.Thread):
         self.data_entrance = data_entrance
         self.socket_table = {}
 
-    def set_data_entrance(self, data_entrance: RDTSocket):
+    def set_data_entrance(self, data_entrance: 'RDTSocket'):
         self.data_entrance = data_entrance
 
     def start(self) -> None:
@@ -848,7 +858,7 @@ class DataCenter(threading.Thread):
         self.__flag.set()
         self.__running.clear()
 
-    def add_sock(self, key: tuple, value: RDTSocket) -> bool:
+    def add_sock(self, key: tuple, value: 'RDTSocket') -> bool:
         """
         Add socket to buff table
 
