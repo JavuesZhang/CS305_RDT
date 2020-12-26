@@ -25,7 +25,7 @@ class Echo(threading.Thread):
         while not self.conn._local_closed:
             while len(data) < res_len and not self.conn._local_closed:
                 data.extend(self.conn.recv(BUFFER_SIZE))
-                if len(data) > 152138/2 + 10:
+                if len(data) > 152138 / 2 + 10:
                     break
             if len(data) != 0:
                 self.conn.send(data)  # echo
@@ -35,6 +35,8 @@ class Echo(threading.Thread):
             else:
                 time.sleep(0.1)
         print('closed')
+
+
 def test00():
     server = RDTSocket()
     server.bind((SERVER_ADDR, SERVER_PORT))
@@ -63,25 +65,29 @@ def test00():
     except KeyboardInterrupt as k:
         print(k)
 
+
 def test01():
     server = RDTSocket()
     server.bind(('127.0.0.1', 9999))
 
     while True:
+        recv_cnt = 0
         conn, client_addr = server.accept()
         start = time.perf_counter()
         while True:
             data = conn.recv(2048)
             if data:
-                if len(data) == 152138:
-                    conn.send(data)
+                recv_cnt += len(data)
+                conn.send(data)
             else:
+                print(f'\n\n\n\nrecv_cnt={recv_cnt}\n\n\n\n')
                 break
         '''
         make sure the following is reachable
         '''
         conn.close()
-        print(f'connection finished in {time.perf_counter()-start}s')
+        print(f'connection finished in {time.perf_counter() - start}s')
+
 
 if __name__ == '__main__':
     test01()

@@ -8,6 +8,7 @@ SERVER_ADDR = '127.0.0.1'
 SERVER_PORT = 18888
 BUFFER_SIZE = 10240
 
+
 def unit_convert(value):
     units = ["B", "KB", "MB", "GB", "TB", "PB"]
     size = 1024.0
@@ -15,6 +16,7 @@ def unit_convert(value):
         if (value / size) < 1:
             return "%.2f%s" % (value, units[i])
         value = value / size
+
 
 def test00():
     client = RDTSocket(debug=False)
@@ -71,16 +73,18 @@ def test01():
         reply = client.recv(2048)
         echo += reply
         print(reply)
+        assert echo == encoded[:len(echo)], '\n\n\n\nwhat???\n\n\n\n\n\n\n'
         if len(echo) == len(encoded) * count:
             break
     client.close()
-
+    print(len(echo), len(encoded) * count)
+    assert echo == encoded * count, 'diff'
     '''
     make sure the following is reachable
     '''
 
     print(f'transmitted {data_count}bytes in {time.perf_counter() - start}s')
-    diff = Differ().compare((data*count).splitlines(keepends=True), echo.decode().splitlines(keepends=True))
+    diff = Differ().compare((data * count).splitlines(keepends=True), echo.decode().splitlines(keepends=True))
 
     for line in diff:
         assert line.startswith('  ')  # check if data is correctly echoed
