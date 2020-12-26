@@ -73,7 +73,8 @@ def test01():
         while True:
             data = conn.recv(2048)
             if data:
-                conn.send(data)
+                if len(data) == 152138:
+                    conn.send(data)
             else:
                 break
         '''

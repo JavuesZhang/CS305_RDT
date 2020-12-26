@@ -51,7 +51,7 @@ def test01():
 
     data_count = 0
     echo = b''
-    count = 3
+    count = 1
 
     with open('alice.txt', 'r') as f:
         data = f.read()
@@ -84,6 +84,7 @@ def test01():
 
     for line in diff:
         assert line.startswith('  ')  # check if data is correctly echoed
+    print('client main thread stop.')
 
 
 if __name__ == '__main__':
