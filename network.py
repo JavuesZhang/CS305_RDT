@@ -100,5 +100,5 @@ server_address = ('127.0.0.1', 11223)
 network2 = ('127.0.0.1', 11224)
 
 if __name__ == '__main__':
-    with Server(server_address) as server:
+    with Server(server_address,rate=16240) as server:
         server.serve_forever()

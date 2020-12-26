@@ -29,6 +29,20 @@ Reliable Data Transfer Segment Format:
     /                            Payload                            /
     /                                                               /
     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
+
+    Flags:
+     - ACK                      Acknowledge
+     - RST                      Reset
+     - SYN                      Synchronize
+     - FIN                      Finish
+
+
+    Ranges:(bit)
+     - head length              128
+     - Sequence Number          0 - 4294967296
+     - Acknowledgement Number   0 - 4294967296
+
+    Checksum Algorithm:         16 bit one's complement of the one's complement sum
 ```
 ref [RFC 793](https://tools.ietf.org/html/rfc793)
 
@@ -37,6 +51,10 @@ ref [RFC 793](https://tools.ietf.org/html/rfc793)
 TCP Option summary: [TCP系列08—连接管理—7、TCP 常见选项(option)](https://www.cnblogs.com/lshs/archive/2004/01/13/6038494.html)
 
 TCP D-SACK reference introduce: [TCP 的那些事 | D-SACK](https://blog.csdn.net/u014023993/article/details/85041321)
+
+python struct 格式字符 https://docs.python.org/zh-cn/3.10/library/struct.html?highlight=struct#struct-format-strings
+
+The range of data that peers are required to retransmit
 
 TCP SACK Option:
 ```angular2html

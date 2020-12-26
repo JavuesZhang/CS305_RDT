@@ -22,8 +22,8 @@ class Echo(threading.Thread):
         data = bytearray()
         res_len = 152138
 
-        while not self.conn.local_closed:
-            while len(data) < res_len and not self.conn.local_closed:
+        while not self.conn._local_closed:
+            while len(data) < res_len and not self.conn._local_closed:
                 data.extend(self.conn.recv(BUFFER_SIZE))
                 if len(data) > 152138/2 + 10:
                     break
