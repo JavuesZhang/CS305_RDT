@@ -2,8 +2,8 @@ from USocket import UnreliableSocket
 import struct, queue, threading, time, random, logging
 
 LOG_FORMAT = "[%(sock_type)s %(levelname)s] %(filename)s[func: %(filename)s  line:%(lineno)d] %(asctime)s: %(message)s"
-DATE_FORMAT = "%m/%d/%Y %H:%M:%S"
-logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, datefmt=DATE_FORMAT)
+DATE_FORMAT = "%Y/%m/%d %H:%M:%S,uuu"
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 rdt_logger = logging.getLogger("RDTSOCK")
 RDT_SOCK_LOG_INFO = [{'sock_type': 'RDTSOCK'}, {'sock_type': 'CLIENT'},
                      {'sock_type': 'SERVER'}, {'sock_type': 'SERVER'}]
@@ -111,7 +111,7 @@ class RDTSocket(UnreliableSocket):
         """
         self._timeout = timeout_sec
 
-    def listen(self, backlog: int = 10):
+    def listen(self, backlog: int = 0):
         """
         Enable a server to accept connections. If backlog is specified,
         it must be at least 0 (if it is lower, it is set to 0).
@@ -151,7 +151,7 @@ class RDTSocket(UnreliableSocket):
 
         conn, addr = RDTSocket(self._rate), None
         if self._conn_cnt == -1:
-            self.listen(10)
+            self.listen(0)
 
         self._allow_accept = True
         peer_info = {}
@@ -164,20 +164,24 @@ class RDTSocket(UnreliableSocket):
                 continue
 
             if rdt_seg.syn:
-                if len(peer_info) > self._backlog:
-                    continue
-                seq_num = 0  # random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
+                if addr in peer_info:
+                    seq_num = peer_info[addr]
+                else:
+                    if len(peer_info) > self._backlog:
+                        continue
+                    seq_num = random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
+
                 self._ack_base = rdt_seg.seq_num
                 self._seq_base = seq_num
                 ack_num = rdt_seg.seq_num + 1
                 syn_ack_seg = RDTSegment(rdt_seg.dest_port, rdt_seg.src_port, seq_num, ack_num,
                                          ack=True, syn=True)
                 self._send_to(syn_ack_seg, addr)
-                peer_info[addr] = (seq_num + 1)
+                peer_info[addr] = seq_num
                 rdt_logger.info(f"Connection establishment request received from client [{addr}]",
                                 extra=RDT_SOCK_LOG_INFO[self._type])
                 rdt_logger.info(f"Client request connection pool: {peer_info}", extra=RDT_SOCK_LOG_INFO[self._type])
-            elif addr in peer_info and rdt_seg.ack_num == peer_info[addr]:
+            elif addr in peer_info and rdt_seg.ack_num -1 == peer_info[addr]:
                 # master server
                 conn._data_center = self._data_center
                 # server
@@ -231,7 +235,7 @@ class RDTSocket(UnreliableSocket):
                         extra=RDT_SOCK_LOG_INFO[self._type])
 
         # send syn pkt
-        self._local_seq_num = 0  # random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
+        self._local_seq_num = random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
         self._local_ack_num = 0
         self._seq_base = self._local_seq_num
         syn_seg = RDTSegment(self._local_addr[1], address[1], self._local_seq_num, self._local_ack_num, syn=True)
@@ -240,19 +244,20 @@ class RDTSocket(UnreliableSocket):
         start_time = time.time()
         try_conn_cnt = 1
         while True:
-            rdt_seg, addr = self._recv_from(timeout_sec=0.1)
+            rdt_seg, addr = self._recv_from(timeout_sec=0.4)
             if rdt_seg:
                 try_conn_cnt = 1
             else:
                 if try_conn_cnt > 20:
-                    rdt_seg.warning("Request no response, exit connection request.",
-                                    extra=RDT_SOCK_LOG_INFO[self._type])
+                    rdt_logger.warning("Request no response, exit connection request.",
+                                       extra=RDT_SOCK_LOG_INFO[self._type])
                     self._peer_addr = ('255.255.255.255', 0)
                     return
                 self._send_to(syn_seg, address)
                 start_time = time.time()
                 try_conn_cnt += 1
                 rdt_logger.info("request timeout, try again.", extra=RDT_SOCK_LOG_INFO[self._type])
+                time.sleep(try_conn_cnt*0.01)
                 continue
 
             if address == addr and rdt_seg.syn and rdt_seg.ack and self._local_seq_num + 1 == rdt_seg.ack_num:
@@ -359,11 +364,11 @@ class RDTSocket(UnreliableSocket):
         fin_seg = RDTSegment(self._local_addr[1], self._peer_addr[1], seq_num, self._local_ack_num,
                              fin=True)
         while True:
-            rdt_seg, addr = self._recv_from(0.1)
-
             # local close
             if self._local_closing:
                 self._send_to(fin_seg, self._peer_addr)
+
+            rdt_seg, addr = self._recv_from(0.3)
 
             if rdt_seg and rdt_seg.ack and rdt_seg.fin and rdt_seg.ack_num == seq_num + 1:
                 self._local_closing = False
@@ -612,7 +617,7 @@ class RDTSocket(UnreliableSocket):
                                 extra=RDT_SOCK_LOG_INFO[self._type])
                             self._seq_num_payload_buff.put(buff, block=False)
                             timer_start = time.time()
-                            time_out *= 2
+                            time_out *= 1.5
                             congestion_control_newAck(self._mss)
 
     def _recv_task(self):
@@ -653,9 +658,11 @@ class RDTSocket(UnreliableSocket):
                 ack_range_tuple = (rdt_seg.seq_num, (rdt_seg.seq_num + data_len) % rdt_seg.SEQ_NUM_BOUND)
                 if self._local_ack_num < rdt_seg.seq_num < self._local_ack_num + self._recv_win_size:
                     # seg_num inside recv window
-                    rdt_logger.info(f'Recv seg inside recv-win, win_base={self._local_ack_num}, seq_num='
-                                    f'{rdt_seg.seq_num}, payload len={len(rdt_seg.payload)}',
-                                    extra=RDT_SOCK_LOG_INFO[self._type])
+                    rdt_logger.info(
+                        f'Recv seg inside recv-win, peer_port={rdt_seg.src_port}, local_port={rdt_seg.dest_port} '
+                        f'win_base={self._local_ack_num}, seq_num='
+                        f'{rdt_seg.seq_num}, payload len={len(rdt_seg.payload)}',
+                        extra=RDT_SOCK_LOG_INFO[self._type])
                     if ack_range_tuple not in self._ack_set:
                         self._main_pq.put(AckRange(ack_range_tuple, rdt_seg.payload))
                         self._ack_set.add(ack_range_tuple)

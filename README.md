@@ -31,6 +31,7 @@ Reliable Data Transfer Segment Format:
     +---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+---+
 
     Flags:
+     - HEADER LENGTH            Header length, unit in word 
      - ACK                      Acknowledge
      - RST                      Reset
      - SYN                      Synchronize
@@ -38,7 +39,7 @@ Reliable Data Transfer Segment Format:
 
 
     Ranges:(bit)
-     - head length              128
+     - Head Length              128
      - Sequence Number          0 - 4294967296
      - Acknowledgement Number   0 - 4294967296
 

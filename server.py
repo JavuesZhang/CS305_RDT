@@ -5,7 +5,7 @@ from rdt import RDTSocket, rdt_logger
 import time, threading
 
 SERVER_ADDR = '127.0.0.1'
-SERVER_PORT = 18888
+SERVER_PORT = 9999
 
 BUFFER_SIZE = 10240
 
@@ -19,22 +19,36 @@ class Echo(threading.Thread):
         self.address = address
 
     def run(self):
-        data = bytearray()
-        res_len = 152138
+        # data = bytearray()
+        # res_len = 152138
+        #
+        # while not self.conn._local_closed:
+        #     while len(data) < res_len and not self.conn._local_closed:
+        #         data.extend(self.conn.recv(BUFFER_SIZE))
+        #         if len(data) > 152138 / 2 + 10:
+        #             break
+        #     if len(data) != 0:
+        #         self.conn.send(data)  # echo
+        #         print('note send~')
+        #         res_len = res_len - len(data)
+        #         data = bytearray()
+        #     else:
+        #         time.sleep(0.1)
+        # print('closed')
+        start = time.perf_counter()
 
-        while not self.conn._local_closed:
-            while len(data) < res_len and not self.conn._local_closed:
-                data.extend(self.conn.recv(BUFFER_SIZE))
-                if len(data) > 152138 / 2 + 10:
-                    break
-            if len(data) != 0:
-                self.conn.send(data)  # echo
-                print('note send~')
-                res_len = res_len - len(data)
-                data = bytearray()
+        while True:
+            data = self.conn.recv(2048)
+            if data:
+                self.conn.send(data)
             else:
-                time.sleep(0.1)
-        print('closed')
+                break
+        '''
+        make sure the following is reachable
+        '''
+        self.conn.close()
+        print(f'connection finished in {time.perf_counter() - start}s')
+
 
 
 def test00():
@@ -42,9 +56,13 @@ def test00():
     server.bind((SERVER_ADDR, SERVER_PORT))
     try:
         while True:
+            print('__________________________')
             conn, client_addr = server.accept()
             Echo(conn, client_addr).start()
 
+            print(conn._peer_addr)
+            print(conn._send_to)
+            print('__________________________')
             # data = bytearray()
             # while True:
             #     time.sleep(0.1)
@@ -87,4 +105,4 @@ def test01():
 
 
 if __name__ == '__main__':
-    test01()
+    test00()
