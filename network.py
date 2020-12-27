@@ -7,8 +7,10 @@ from socketserver import ThreadingUDPServer
 lock = threading.Lock()
 
 loss_rate = 0.1
-corrupt_rate = 0.0001
+corrupt_rate = 0.00001
+corrupt_rate_byte = (1-corrupt_rate)**8
 buffer_size = 100000
+
 
 def bytes_to_addr(bytes):
     return inet_ntoa(bytes[:4]), int.from_bytes(bytes[4:8], 'big')
@@ -34,7 +36,7 @@ class Server(ThreadingUDPServer):
         if this function returns False， the request will not be processed, i.e. is discarded.
         details: https://docs.python.org/3/library/socketserver.html
         """
-        if self.buffer+len(request[0]) < buffer_size:  # some finite buffer size (in bytes)
+        if self.buffer + len(request[0]) < buffer_size:  # some finite buffer size (in bytes)
             self.buffer += len(request[0])
             return True
         else:
@@ -77,10 +79,10 @@ class Server(ThreadingUDPServer):
             data = bytearray(data)
             is_corrupted = False
             for i in range(8, len(data)):
-                if random.random() > 0.9999200027999444:
+                if random.random() > corrupt_rate_byte:
                     is_corrupted = True
                     data[i] = data[i] ^ random.randint(0, 255)
-            if is_corrupted:
+            if is_corrupted and corrupt:
                 print(client_address, bytes_to_addr(data[:8]), f" corrupt pkt, {corrupt.log_raw_info()}")
             data = bytes(data)
         """

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import logging
-from rdt import RDTSocket, server_logger
+from rdt import RDTSocket, rdt_logger
 import time, threading
 
 SERVER_ADDR = '127.0.0.1'
@@ -71,16 +71,13 @@ def test01():
     server.bind(('127.0.0.1', 9999))
 
     while True:
-        recv_cnt = 0
         conn, client_addr = server.accept()
         start = time.perf_counter()
         while True:
             data = conn.recv(2048)
             if data:
-                recv_cnt += len(data)
                 conn.send(data)
             else:
-                print(f'\n\n\n\nrecv_cnt={recv_cnt}\n\n\n\n')
                 break
         '''
         make sure the following is reachable
