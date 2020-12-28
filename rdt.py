@@ -8,6 +8,8 @@ rdt_logger = logging.getLogger("RDTSOCK")
 RDT_SOCK_LOG_INFO = [{'sock_type': 'RDTSOCK'}, {'sock_type': 'CLIENT'},
                      {'sock_type': 'SERVER'}, {'sock_type': 'SERVER'}]
 
+lock = threading.Lock()
+
 RDT_SOCK_CLIENT = 1
 RDT_SOCK_MASTER_SERVER = 2
 RDT_SOCK_SERVER = 3
@@ -474,8 +476,9 @@ class RDTSocket(UnreliableSocket):
             need_send = True
             congestionCtrl_state = 0
             threash = CONSTANT2P32
-            data = bytes(self._data_buff_send)
-            self._data_buff_send.clear()
+            with lock:
+                data = bytes(self._data_buff_send)
+                self._data_buff_send.clear()
             data_len = len(data)
 
             # first sequence num

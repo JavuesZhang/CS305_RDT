@@ -9,7 +9,7 @@ lock = threading.Lock()
 loss_rate = 0.1
 corrupt_rate = 0.00001
 corrupt_rate_byte = (1 - corrupt_rate) ** 8
-buffer_size = 100000
+buffer_size = 20000
 
 
 def bytes_to_addr(bytes):
@@ -103,5 +103,5 @@ server_address = ('127.0.0.1', 11223)
 network2 = ('127.0.0.1', 11224)
 
 if __name__ == '__main__':
-    with Server(server_address, rate=10 * 1024) as server:
+    with Server(server_address, rate=20480) as server:
         server.serve_forever()

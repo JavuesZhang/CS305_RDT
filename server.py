@@ -60,8 +60,6 @@ def test00():
             conn, client_addr = server.accept()
             Echo(conn, client_addr).start()
 
-            print(conn._peer_addr)
-            print(conn._send_to)
             print('__________________________')
             # data = bytearray()
             # while True:
