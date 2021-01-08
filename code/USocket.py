@@ -1,16 +1,9 @@
 from socket import socket, AF_INET, SOCK_DGRAM, inet_aton, inet_ntoa
+from utils import bytes_to_addr, addr_to_bytes
 import time
 
 sockets = {}
 network = ('127.0.0.1', 11223)
-
-
-def bytes_to_addr(bytes):
-    return inet_ntoa(bytes[:4]), int.from_bytes(bytes[4:8], 'big')
-
-
-def addr_to_bytes(addr):
-    return inet_aton(addr[0]) + addr[1].to_bytes(4, 'big')
 
 
 def get_sendto(id, rate=None):

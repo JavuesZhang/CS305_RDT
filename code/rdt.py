@@ -151,7 +151,7 @@ class RDTSocket(UnreliableSocket):
         """
         assert not self._local_closed, "Socket already closed, could not use again."
 
-        conn, addr = RDTSocket(self._rate), None
+        conn, addr = RDTSocket(self._rate, self.debug), None
         if self._conn_cnt == -1:
             self.listen(0)
 
@@ -183,7 +183,7 @@ class RDTSocket(UnreliableSocket):
                 rdt_logger.info(f"Connection establishment request received from client [{addr}]",
                                 extra=RDT_SOCK_LOG_INFO[self._type])
                 rdt_logger.info(f"Client request connection pool: {peer_info}", extra=RDT_SOCK_LOG_INFO[self._type])
-            elif addr in peer_info and rdt_seg.ack_num -1 == peer_info[addr]:
+            elif addr in peer_info and rdt_seg.ack_num - 1 == peer_info[addr]:
                 # master server
                 conn._data_center = self._data_center
                 # server
@@ -259,7 +259,7 @@ class RDTSocket(UnreliableSocket):
                 start_time = time.time()
                 try_conn_cnt += 1
                 rdt_logger.info("request timeout, try again.", extra=RDT_SOCK_LOG_INFO[self._type])
-                time.sleep(try_conn_cnt*0.01)
+                time.sleep(try_conn_cnt * 0.01)
                 continue
 
             if address == addr and rdt_seg.syn and rdt_seg.ack and self._local_seq_num + 1 == rdt_seg.ack_num:
@@ -331,7 +331,7 @@ class RDTSocket(UnreliableSocket):
         while self._receiving or self._sending:
             rdt_logger.info(f'Local socket [{self._local_addr}] closing, wait sub recv and send thread stop. sending='
                             f'{self._sending}  receiving={self._receiving}', extra=RDT_SOCK_LOG_INFO[self._type])
-            time.sleep(1)
+            time.sleep(2)
 
         self._close_resrc()
         super().close()
@@ -342,18 +342,18 @@ class RDTSocket(UnreliableSocket):
         """
         ack_seg = RDTSegment(self._local_addr[1], self._peer_addr[1], self._local_seq_num,
                              self._local_ack_num, ack=True, fin=True)
-        tout = 0
+        self._peer_closing = True
+        tout = time.time() + 3
         while True:
             rdt_seg, addr = self._recv_from(0.1)
             # peer close
             if rdt_seg and rdt_seg.fin and not rdt_seg.ack:
-                self._peer_closing = True
                 ack_seg.ack_num = rdt_seg.seq_num + 1
                 self._send_to(ack_seg, self._peer_addr)
-                tout = time.time() + 2
+                tout = time.time() + 3
                 rdt_logger.info(f'Receive fin seg, wait two max segment lifetime.', extra=RDT_SOCK_LOG_INFO[self._type])
 
-            if self._peer_closing and time.time() > tout:
+            if time.time() > tout:
                 self._peer_closed = True
                 break
         rdt_logger.info(f'Peer socket {self._local_addr} closed', extra=RDT_SOCK_LOG_INFO[self._type])
@@ -365,12 +365,14 @@ class RDTSocket(UnreliableSocket):
         seq_num = random.randint(0, RDTSegment.SEQ_NUM_BOUND - 1)
         fin_seg = RDTSegment(self._local_addr[1], self._peer_addr[1], seq_num, self._local_ack_num,
                              fin=True)
+        tout = time.time()
         while True:
             # local close
-            if self._local_closing:
+            if self._local_closing and time.time() > tout:
                 self._send_to(fin_seg, self._peer_addr)
+                tout = time.time() + 0.8
 
-            rdt_seg, addr = self._recv_from(0.3)
+            rdt_seg, addr = self._recv_from(1)
 
             if rdt_seg and rdt_seg.ack and rdt_seg.fin and rdt_seg.ack_num == seq_num + 1:
                 self._local_closing = False
@@ -982,6 +984,8 @@ class RDTSegment:
     def encode(self) -> bytes:
         """
         Encode RDTSegment object to segment (bytes)
+
+        python struct format string: https://docs.python.org/zh-cn/3.10/library/struct.html?highlight=struct#struct-format-strings
         """
         options = self._encode_options()
         self.header_len = (len(options) + 16)
