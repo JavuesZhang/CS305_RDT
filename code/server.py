@@ -40,7 +40,8 @@ def server_test(debug_model: bool):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('-debug', '--debug_model', type=int, default=1)
+    parser.add_argument('-debug', dest='debug_model', help='Debug model, 1 means active, 0 means closed',
+                        type=int, default=1)
     args = parser.parse_args()
 
     server_test(debug_model=bool(args.debug_model))

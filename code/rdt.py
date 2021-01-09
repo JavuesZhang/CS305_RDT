@@ -151,7 +151,7 @@ class RDTSocket(UnreliableSocket):
         """
         assert not self._local_closed, "Socket already closed, could not use again."
 
-        conn, addr = RDTSocket(self._rate, self.debug), None
+        conn, addr = None, None
         if self._conn_cnt == -1:
             self.listen(0)
 
@@ -184,6 +184,7 @@ class RDTSocket(UnreliableSocket):
                                 extra=RDT_SOCK_LOG_INFO[self._type])
                 rdt_logger.info(f"Client request connection pool: {peer_info}", extra=RDT_SOCK_LOG_INFO[self._type])
             elif addr in peer_info and rdt_seg.ack_num - 1 == peer_info[addr]:
+                conn = RDTSocket(self._rate, self.debug)
                 # master server
                 conn._data_center = self._data_center
                 # server
@@ -250,11 +251,11 @@ class RDTSocket(UnreliableSocket):
             if rdt_seg:
                 try_conn_cnt = 1
             else:
-                if try_conn_cnt > 20:
+                if try_conn_cnt > 15:
                     rdt_logger.warning("Request no response, exit connection request.",
                                        extra=RDT_SOCK_LOG_INFO[self._type])
                     self._peer_addr = ('255.255.255.255', 0)
-                    return
+                    return False
                 self._send_to(syn_seg, address)
                 start_time = time.time()
                 try_conn_cnt += 1
@@ -276,6 +277,7 @@ class RDTSocket(UnreliableSocket):
                         extra=RDT_SOCK_LOG_INFO[self._type])
         self._recv_thread = ProcessingSegment(self)
         self._recv_thread.start()
+        return True
 
     def recv(self, buff_size: int) -> bytes:
         """

@@ -3,7 +3,7 @@ from utils import bytes_to_addr, addr_to_bytes
 import time
 
 sockets = {}
-network = ('127.0.0.1', 11223)
+network = ('127.0.0.1', 11223)  # same as network address in network.py
 
 
 def get_sendto(id, rate=None):

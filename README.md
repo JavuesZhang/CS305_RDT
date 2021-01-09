@@ -30,9 +30,6 @@ CS305 Computer Network course project in SUSTech 2020-Fall, The description docu
 │   └── Receive_Window_rollback.jpg
 ├── LICENSE
 └── README.md
-
-note:
-network.py is used to imitate routers, forward segment
 ```
 
 <br>
@@ -56,9 +53,24 @@ It is the same as the follow
 
 ```bash
 python network.py -buf 50000 -loss 0.1 -delay 0 -corrupt 0.00001
-python server.py -debug True
-python client.py -file ../LICENSE -debug True
+python server.py -debug 1
+python client.py -file ../LICENSE -debug 1
 ```
+
+<br>
+
+Note:
+* Use multiple clients, please run  *python client.py*  multiple times
+*  *network.py*  is used to imitate routers, forward segment
+* Parameters: 
+  + rate: limit bandwidth, unit Byte/s, default is None, None means no rate limit
+  + buf:  router buffer size, unit byte
+  + loss: segment loss rate
+  + delay: link delay, unit byte/s
+  + corrupt: segment corrupt rate
+  + debug: debug model, 1 means active, 0 means closed
+  + file: file that need to be transferred by the client
+
 
 <br>
 
@@ -186,6 +198,10 @@ ref [RFC 2883](https://tools.ietf.org/html/rfc2883)
 > RDT Socket Client
 > * Data sending and receiving is realized through the interface provided by USocket.
 
+
+<br>
+
+
 > RDT Socket Server
 > * RDT socket calls the function listen() to become a server, at this time, a listen socket and a data center will be generated.
 > * Data center distribute the data correctly, the data comes from each peer or network, and the destination is the network or the corresponding peer.
@@ -210,23 +226,19 @@ Receive module use priority queue to
 <div style="text-align: center;">Fig. 4  Receive window</div>
 
 
-<br>
+<br><br>
 
 In order to deal with receive window rollback, a sub priority queue is used to temporarily store the segment information.
 
 ![Receive_Window_rollback](./image/Receive_Window_rollback.jpg)
 <div style="text-align: center;">Fig. 4  Receive window (rollback)</div>
 
-<br>
+<br><br>
 
 
 ## Contributors
 
-<a href="https://github.com/JavuesZhang"> <img src="https://avatars0.githubusercontent.com/u/48386227?s=460&u=aa421a8e82ebc5d473851a4e1e2bae08f04daa12&v=4" style="width:80px; height:80px; border-radius:50%; " alt="JavuesZhang"/> </a>
-
-<a href="https://github.com/Gan-Cheng"> <img src="https://avatars2.githubusercontent.com/u/63938745?s=460&v=4" style="width:80px; height:80px; border-radius:50%; " alt="Gan-Cheng"/> </a>
-
-<a href="https://github.com/Ryyyc"> <img src="https://avatars1.githubusercontent.com/u/47767371?s=460&u=f3d458d2c7205df2ecd69ea0f5b35059581e1aa0&v=4" style="width:80px; height:80px; border-radius:50%; " alt="Ruan"/> </a>
+<a white-space="n" href="https://github.com/JavuesZhang"> <img src="https://avatars0.githubusercontent.com/u/48386227?s=460&u=aa421a8e82ebc5d473851a4e1e2bae08f04daa12&v=4" style="max-width:10%; border-radius:50%;" alt="JavuesZhang"/></a><a href="https://github.com/Gan-Cheng"> <img src="https://avatars2.githubusercontent.com/u/63938745?s=460&v=4" style="max-width:10%; border-radius:50%;" alt="Gan-Cheng"/></a><a href="https://github.com/Ryyyc"> <img src="https://avatars1.githubusercontent.com/u/47767371?s=460&u=f3d458d2c7205df2ecd69ea0f5b35059581e1aa0&v=4" style="max-width:10%; border-radius:50%;" alt="Ruan"/></a>
 
 
 <br>

@@ -88,11 +88,13 @@ class Server(ThreadingUDPServer):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('-rate', '--rate', type=int, default=RATE)
-    parser.add_argument('-buf', '--buf_size', type=int, default=BUF_SIZE)
-    parser.add_argument('-loss', '--loss_rate', type=float, default=LOSS_RATE)
-    parser.add_argument('-delay', '--delay', type=int, default=DELAY)
-    parser.add_argument('-corrupt', '--corrupt_rate', type=float, default=CORRUPT_RATE)
+    parser.add_argument('-rate', dest='rate',
+                        help='Limit bandwidth, unit Byte/s, default is None, None means no rate limit',
+                        type=int, default=RATE)
+    parser.add_argument('-buf', dest='buf_size', help='Router buffer size, unit byte', type=int, default=BUF_SIZE)
+    parser.add_argument('-loss', dest='loss_rate', help='Segment loss rate', type=float, default=LOSS_RATE)
+    parser.add_argument('-delay', dest='delay', help='Link delay, unit byte/s', type=int, default=DELAY)
+    parser.add_argument('-corrupt', dest='corrupt_rate', help='Segment corrupt rate', type=float, default=CORRUPT_RATE)
 
     args = parser.parse_args()
 
